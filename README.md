@@ -2,6 +2,8 @@
 
 AIネイティブなターミナルブラウザ。Rustで実装。
 
+**stillo** は *distill*（蒸留する）から作った造語です。Webページを蒸留して情報だけを抽出するというコンセプトを名前に込めています。
+
 ## 概要
 
 stilloはターミナル上で動作するブラウザです。静的なHTMLページはそのまま取得し、React/Vue等のSPAはChrome CDP・Jina Reader・Firecrawl等へ自動委譲してコンテンツを取得します。取得したページはMarkdown/テキスト/JSONとして出力するか、TUIで対話的にブラウズできます。
