@@ -1,5 +1,7 @@
 use markup5ever_rcdom::{Handle, NodeData};
 use url::Url;
+use std::collections::HashMap;
+use std::rc::Rc;
 use crate::document::{ExtractedContent, ExtractedLink, PageMetadata};
 
 const NOISE_TAGS: &[&str] = &["nav", "header", "footer", "aside", "script", "style", "noscript", "iframe", "form"];
@@ -20,10 +22,27 @@ impl ReadabilityExtractor {
             .and_then(|b| find_main_content(b))
             .or(body.clone());
 
-        let (body_html, body_text, links) = main_node
+        let (mh, mt, ml) = main_node
             .as_ref()
             .map(|n| self.serialize_content(n, base_url))
             .unwrap_or_else(|| (String::new(), String::new(), Vec::new()));
+
+        // 選択されたノードのコンテンツが極端に少ない場合は body 全体を試みる。
+        // ニュース一覧など「全てがリンク」な構造ではスコアリングが個別カードを選びがちなため。
+        let (body_html, body_text, links) = if mt.trim().len() < 200 {
+            if let Some(b) = body.as_ref() {
+                let (bh, bt, bl) = self.serialize_content(b, base_url);
+                if bt.trim().len() > mt.trim().len() {
+                    (bh, bt, bl)
+                } else {
+                    (mh, mt, ml)
+                }
+            } else {
+                (mh, mt, ml)
+            }
+        } else {
+            (mh, mt, ml)
+        };
 
         ExtractedContent {
             url: base_url.clone(),
@@ -64,68 +83,94 @@ fn find_tag(handle: &Handle, tag_name: &str) -> Option<Handle> {
 }
 
 fn find_main_content(body: &Handle) -> Option<Handle> {
-    // まず <main>, <article> を優先探索
+    // <main>, <article> を優先
     if let Some(node) = find_tag(body, "main").or_else(|| find_tag(body, "article")) {
         return Some(node);
     }
 
-    // スコアリングでメインコンテンツを特定
-    let mut best: Option<(Handle, f64)> = None;
-    score_nodes(body, &mut best);
-    best.map(|(node, _)| node)
+    // Readability.js 方式: リーフノードのスコアを祖先コンテナへ伝播し、
+    // コンテンツが豊富な大きなブロックが選ばれるようにする。
+    let mut candidates: HashMap<usize, (Handle, f64)> = HashMap::new();
+    let mut ancestors: Vec<Handle> = Vec::new();
+    collect_candidate_scores(body, &mut ancestors, &mut candidates);
+
+    candidates
+        .into_values()
+        .map(|(h, raw)| {
+            let text_len = count_text(&h) as f64;
+            let link_len = count_link_text(&h) as f64;
+            let density = if text_len > 0.0 { link_len / text_len } else { 1.0 };
+            let bonus = class_score(&h);
+            let score = (raw + bonus) * (1.0 - density);
+            (h, score)
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(node, _)| node)
 }
 
-fn score_nodes(handle: &Handle, best: &mut Option<(Handle, f64)>) {
+/// p/pre/blockquote/td/li などコンテンツ信号になるノードを起点に、
+/// 祖先コンテナへ最大 4 段階・重みを半減しながらスコアを伝播する。
+fn collect_candidate_scores(
+    handle: &Handle,
+    ancestors: &mut Vec<Handle>,
+    candidates: &mut HashMap<usize, (Handle, f64)>,
+) {
     if is_noise(handle) {
         return;
     }
 
     if let NodeData::Element { name, .. } = &handle.data {
         let tag = name.local.as_ref();
-        let score = compute_score(handle, tag);
-        if score > 20.0 {
-            match best {
-                None => *best = Some((handle.clone(), score)),
-                Some((_, best_score)) if score > *best_score => {
-                    *best = Some((handle.clone(), score));
+        let score = leaf_content_score(handle, tag);
+
+        if score > 0.0 {
+            let mut weight = 1.0;
+            let mut levels = 0usize;
+            for ancestor in ancestors.iter().rev() {
+                if let NodeData::Element { name: aname, .. } = &ancestor.data {
+                    if is_candidate_tag(aname.local.as_ref()) {
+                        let key = Rc::as_ptr(ancestor) as usize;
+                        candidates
+                            .entry(key)
+                            .or_insert_with(|| (ancestor.clone(), 0.0))
+                            .1 += score * weight;
+                        weight *= 0.5;
+                        levels += 1;
+                        if levels >= 4 {
+                            break;
+                        }
+                    }
                 }
-                _ => {}
             }
         }
     }
 
+    ancestors.push(handle.clone());
     for child in handle.children.borrow().iter() {
-        score_nodes(child, best);
+        collect_candidate_scores(child, ancestors, candidates);
+    }
+    ancestors.pop();
+}
+
+/// コンテンツ信号となるリーフノードの基礎スコア
+fn leaf_content_score(handle: &Handle, tag: &str) -> f64 {
+    let text_len = count_text(handle) as f64;
+    if text_len < 20.0 {
+        return 0.0;
+    }
+    match tag {
+        "p" => 1.0 + (text_len / 100.0).min(3.0),
+        "pre" | "blockquote" => 3.0 + (text_len / 100.0).min(3.0),
+        "td" => (text_len / 50.0).min(3.0),
+        "li" => 0.5 + (text_len / 200.0).min(1.0),
+        _ => 0.0,
     }
 }
 
-fn compute_score(handle: &Handle, tag: &str) -> f64 {
-    let base = match tag {
-        "article" => 30.0,
-        "section" => 10.0,
-        "div" => 5.0,
-        "p" => 3.0,
-        "td" => 3.0,
-        "blockquote" => 3.0,
-        "pre" => 3.0,
-        _ => 0.0,
-    };
-
-    if base == 0.0 {
-        return 0.0;
-    }
-
-    // クラス/IDによる補正
-    let class_bonus = class_score(handle);
-
-    let text_len = count_text(handle) as f64;
-    let link_len = count_link_text(handle) as f64;
-
-    // リンク密度ペナルティ: リンクテキストが多いほど本文らしくない
-    let link_density = if text_len > 0.0 { link_len / text_len } else { 0.0 };
-    let density_penalty = link_density * 50.0;
-
-    base + class_bonus + (text_len * 0.1).min(30.0) - density_penalty
+/// スコアを受け取るコンテナ候補として有効なタグ
+fn is_candidate_tag(tag: &str) -> bool {
+    matches!(tag, "div" | "section" | "article" | "main" | "blockquote" | "pre" | "td" | "tbody" | "p")
 }
 
 fn class_score(handle: &Handle) -> f64 {
@@ -284,11 +329,15 @@ fn serialize_node(
                     html.push_str("</a>");
 
                     if let Some(href_url) = resolved {
-                        links.push(ExtractedLink {
-                            text: link_text.trim().to_owned(),
-                            href: href_url,
-                            rel,
-                        });
+                        let trimmed = link_text.trim().to_owned();
+                        // 画像リンク等でアンカーテキストが空のものは除外
+                        if !trimmed.is_empty() {
+                            links.push(ExtractedLink {
+                                text: trimmed,
+                                href: href_url,
+                                rel,
+                            });
+                        }
                     }
                     return;
                 }
