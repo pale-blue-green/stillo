@@ -45,7 +45,7 @@ impl MarkdownSerializer {
         }
         out.push_str(&format!("> Source: {}\n\n", content.url));
 
-        let body_md = self.html_to_markdown(&content.body_html);
+        let body_md = self.html_to_markdown(&content.body_html, &content.url);
         out.push_str(&body_md);
 
         if self.config.include_links && !content.links.is_empty() {
@@ -62,8 +62,8 @@ impl MarkdownSerializer {
         }
     }
 
-    fn html_to_markdown(&self, html: &str) -> String {
-        let mut converter = HtmlToMarkdown::new(self.config.include_links);
+    fn html_to_markdown(&self, html: &str, base_url: &url::Url) -> String {
+        let mut converter = HtmlToMarkdown::new(self.config.include_links, base_url.clone());
         converter.convert(html);
         normalize_blank_lines(&converter.output)
     }
@@ -72,6 +72,7 @@ impl MarkdownSerializer {
 struct HtmlToMarkdown {
     output: String,
     include_links: bool,
+    base_url: url::Url,
     /// リンク処理中: (href, collected_text)
     link_stack: Vec<(String, String)>,
     list_depth: usize,
@@ -79,10 +80,11 @@ struct HtmlToMarkdown {
 }
 
 impl HtmlToMarkdown {
-    fn new(include_links: bool) -> Self {
+    fn new(include_links: bool, base_url: url::Url) -> Self {
         Self {
             output: String::new(),
             include_links,
+            base_url,
             link_stack: Vec::new(),
             list_depth: 0,
             ordered_counters: Vec::new(),
@@ -170,7 +172,15 @@ impl HtmlToMarkdown {
             ("li", true) => {}
 
             ("a", false) if self.include_links => {
-                let href = extract_attr(attrs, "href").unwrap_or_default();
+                let raw_href = extract_attr(attrs, "href").unwrap_or_default();
+                // 相対URLは base_url を基に絶対URLへ解決する
+                let href = if raw_href.is_empty() {
+                    raw_href
+                } else {
+                    self.base_url.join(&raw_href)
+                        .map(|u| u.to_string())
+                        .unwrap_or(raw_href)
+                };
                 self.link_stack.push((href, String::new()));
             }
             ("a", true) if self.include_links => {
