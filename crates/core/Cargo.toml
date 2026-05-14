@@ -2,6 +2,10 @@
 name = "stillo-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "Core domain types and content extraction logic for stillo terminal browser"
 
 [dependencies]
 url = { workspace = true }

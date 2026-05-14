@@ -2,6 +2,10 @@
 name = "stillo-fetcher"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "HTTP client and SPA delegation chain for stillo terminal browser"
 
 [features]
 # Chrome DevTools Protocol 委譲を有効化（Chromeが必要）
@@ -9,7 +13,7 @@ cdp = ["dep:tokio-tungstenite"]
 default = []
 
 [dependencies]
-stillo-core = { path = "../core" }
+stillo-core = { path = "../core", version = "0.1" }
 url = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

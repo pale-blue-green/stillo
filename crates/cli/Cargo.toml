@@ -2,15 +2,19 @@
 name = "stillo"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "AI-native terminal browser"
 
 [[bin]]
 name = "stillo"
 path = "src/main.rs"
 
 [dependencies]
-stillo-core = { path = "../core" }
-stillo-fetcher = { path = "../fetcher" }
-stillo-renderer = { path = "../renderer" }
+stillo-core = { path = "../core", version = "0.1" }
+stillo-fetcher = { path = "../fetcher", version = "0.1" }
+stillo-renderer = { path = "../renderer", version = "0.1" }
 url = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

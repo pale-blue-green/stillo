@@ -2,9 +2,13 @@
 name = "stillo-renderer"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "ratatui TUI renderer for stillo terminal browser"
 
 [dependencies]
-stillo-core = { path = "../core" }
+stillo-core = { path = "../core", version = "0.1" }
 ratatui = "0.29"
 crossterm = "0.28"
 anyhow = { workspace = true }
