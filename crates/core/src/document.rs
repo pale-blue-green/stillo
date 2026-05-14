@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use url::Url;
+use crate::ast::Document;
 
 #[derive(Debug, Clone)]
 pub struct RawHtml {
@@ -35,6 +36,18 @@ pub struct PageMetadata {
     pub og_image: Option<String>,
     pub canonical: Option<Url>,
     pub published_at: Option<DateTime<Utc>>,
+}
+
+/// フォーマット非依存のブラウズ用ページ表現。
+/// HTML / RSS / Markdown など各入力から変換して TuiBrowser に渡す。
+#[derive(Debug, Clone)]
+pub struct BrowsePage {
+    pub title: String,
+    pub url: Url,
+    pub doc: Document,
+    pub links: Vec<ExtractedLink>,
+    /// TUI の 'd' キー dump 用 Markdown テキスト
+    pub markdown: String,
 }
 
 #[derive(Debug, Clone)]

@@ -80,25 +80,67 @@ async fn browse(
 
     loop {
         let raw = fetch_raw(&current_url, timeout, delegate, no_delegate).await?;
-        let extractor = ContentExtractor::new(ExtractorConfig::default());
-        let content = extractor.extract(&raw).with_context(|| "failed to extract content")?;
-
-        let mut browser = TuiBrowser::new(content.clone());
+        let page = raw_to_browse_page(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
+        let markdown = page.markdown.clone();
+        let mut browser = TuiBrowser::new(page);
 
         match browser.run()? {
             TuiResult::Navigate(next_url) => {
                 current_url = next_url;
             }
             TuiResult::Dump => {
-                let serializer = MarkdownSerializer::new(MarkdownConfig::default());
-                let doc = serializer.serialize(&content);
-                print!("{}", doc.content);
+                print!("{}", markdown);
                 break;
             }
             TuiResult::Quit => break,
         }
     }
     Ok(())
+}
+
+/// RawHtml を Content-Type とボディの内容に応じてフォーマット判定し BrowsePage に変換する。
+/// フォーマット判定をフェッチ後に行うことで、レスポンスの実態に基づいた処理ができる。
+fn raw_to_browse_page(raw: stillo_core::document::RawHtml) -> Result<stillo_core::BrowsePage, stillo_core::ExtractionError> {
+    let ct = raw.content_type.to_lowercase();
+
+    let is_feed = ct.contains("rss") || ct.contains("atom")
+        || (ct.contains("xml") && looks_like_feed(&raw.bytes));
+    let is_markdown = ct.contains("markdown") || ct.contains("text/plain");
+
+    if is_feed {
+        let text = String::from_utf8_lossy(&raw.bytes);
+        if let Some(page) = stillo_core::parse_rss_to_ast(&text, &raw.url) {
+            return Ok(page);
+        }
+        // フィードと判定したがパース失敗の場合は HTML として処理するためフォールスルーする
+    }
+
+    if is_markdown {
+        let text = String::from_utf8_lossy(&raw.bytes);
+        return Ok(stillo_core::parse_markdown_to_ast(&text, &raw.url));
+    }
+
+    // HTML パス（デフォルト）
+    let extractor = ContentExtractor::new(ExtractorConfig::default());
+    let content = extractor.extract(&raw)?;
+    let doc = stillo_core::parse_html_to_ast(&content.body_html, &content.url);
+    let serializer = MarkdownSerializer::new(MarkdownConfig::default());
+    let md_doc = serializer.serialize(&content);
+    Ok(stillo_core::BrowsePage {
+        title: content.title,
+        url: content.url,
+        doc,
+        links: content.links,
+        markdown: md_doc.content,
+    })
+}
+
+/// XML のバイト列先頭を見て RSS または Atom らしいかを判定する。
+/// Content-Type だけでは application/xml と返すサーバがあるため本文も確認する。
+fn looks_like_feed(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(512)];
+    let s = String::from_utf8_lossy(head).to_lowercase();
+    s.contains("<rss") || s.contains("<feed")
 }
 
 async fn fetch_raw(

@@ -3,7 +3,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use stillo_core::{Block, Document, Inline, document::{ExtractedContent, ExtractedLink}};
+use stillo_core::{Block, Document, Inline, document::{ExtractedContent, ExtractedLink}}; // ExtractedContent は from_content ラッパーで使用
 use url::Url;
 
 const WRAP_WIDTH: usize = 80;
@@ -22,10 +22,10 @@ pub struct ContentView {
 }
 
 impl ContentView {
-    pub fn from_content(content: &ExtractedContent) -> Self {
-        let doc = stillo_core::parse_html_to_ast(&content.body_html, &content.url);
-        let mut renderer = DocRenderer::new(&content.links);
-        renderer.render(&doc);
+    /// Document と links から直接 ContentView を構築する（フォーマット非依存エントリポイント）
+    pub fn from_document(doc: &Document, links: &[ExtractedLink]) -> Self {
+        let mut renderer = DocRenderer::new(links);
+        renderer.render(doc);
         Self {
             lines: renderer.lines,
             link_positions: renderer.link_positions,
@@ -33,6 +33,12 @@ impl ContentView {
             scroll_offset: 0,
             selected_link: None,
         }
+    }
+
+    /// HTML コンテンツから ContentView を構築する（後方互換ラッパー）
+    pub fn from_content(content: &ExtractedContent) -> Self {
+        let doc = stillo_core::parse_html_to_ast(&content.body_html, &content.url);
+        Self::from_document(&doc, &content.links)
     }
 
     pub fn total_lines(&self) -> usize {

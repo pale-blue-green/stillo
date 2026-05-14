@@ -16,3 +16,5 @@ html5ever = "0.27"
 markup5ever_rcdom = "0.3"
 encoding_rs = "0.8"
 tracing = { workspace = true }
+roxmltree = "0.20"
+pulldown-cmark = "0.12"

@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     Frame, Terminal,
 };
-use stillo_core::document::ExtractedContent;
+use stillo_core::document::BrowsePage;
 use url::Url;
 
 use crate::widgets::{
@@ -31,19 +31,19 @@ enum BrowserMode {
 }
 
 pub struct TuiBrowser {
-    content: ExtractedContent,
+    page: BrowsePage,
     view: ContentView,
     mode: BrowserMode,
     search_matches: Vec<usize>,
     search_cursor: usize,
-    history: Vec<(ExtractedContent, usize)>,
+    history: Vec<(BrowsePage, usize)>,
 }
 
 impl TuiBrowser {
-    pub fn new(content: ExtractedContent) -> Self {
-        let view = ContentView::from_content(&content);
+    pub fn new(page: BrowsePage) -> Self {
+        let view = ContentView::from_document(&page.doc, &page.links);
         Self {
-            content,
+            page,
             view,
             mode: BrowserMode::Normal,
             search_matches: Vec::new(),
@@ -53,9 +53,9 @@ impl TuiBrowser {
     }
 
     /// CLIが履歴エントリを積む（戻る操作のため）
-    pub fn push_history(&mut self, content: ExtractedContent) {
+    pub fn push_history(&mut self, page: BrowsePage) {
         let offset = self.view.scroll_offset;
-        self.history.push((content, offset));
+        self.history.push((page, offset));
     }
 
     pub fn run(&mut self) -> Result<TuiResult> {
@@ -133,17 +133,17 @@ impl TuiBrowser {
 
             // リンクフォロー
             KeyCode::Enter => {
-                if let Some(url) = self.view.selected_link_url(&self.content.links) {
+                if let Some(url) = self.view.selected_link_url(&self.page.links) {
                     return Some(TuiResult::Navigate(url.clone()));
                 }
             }
 
             // 戻る
             KeyCode::Char('B') => {
-                if let Some((prev_content, prev_offset)) = self.history.pop() {
-                    let mut prev_view = ContentView::from_content(&prev_content);
+                if let Some((prev_page, prev_offset)) = self.history.pop() {
+                    let mut prev_view = ContentView::from_document(&prev_page.doc, &prev_page.links);
                     prev_view.scroll_offset = prev_offset;
-                    self.content = prev_content;
+                    self.page = prev_page;
                     self.view = prev_view;
                     self.search_matches.clear();
                 }
@@ -252,7 +252,7 @@ impl TuiBrowser {
             ])
             .split(f.area());
 
-        render_status_bar(f, chunks[0], &self.content.title, self.content.url.as_str());
+        render_status_bar(f, chunks[0], &self.page.title, self.page.url.as_str());
 
         let viewport_height = chunks[1].height as usize;
         let visible_lines: Vec<_> = self
