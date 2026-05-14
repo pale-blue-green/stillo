@@ -9,6 +9,7 @@ use stillo_core::{
 };
 use stillo_fetcher::{HttpConfig, HttpFetcher, SpaDelegationChain};
 use stillo_renderer::{TuiBrowser, TuiResult};
+use stillo_llm::{LlmProvider, CompletionConfig, prompts};
 use url::Url;
 
 #[tokio::main]
@@ -36,14 +37,21 @@ async fn main() -> Result<()> {
             let no_del = cli.no_delegate;
             browse(&url, cli.timeout, del.as_ref(), no_del).await?;
         }
-        Some(Command::Qa { .. }) => {
-            bail!("qa は Phase 4 で実装予定です");
+        Some(Command::Qa { question, url }) => {
+            let del = cli.delegate.clone();
+            let no_del = cli.no_delegate;
+            qa(&question, &url, cli.timeout, del.as_ref(), no_del).await?;
         }
-        Some(Command::Summarize { .. }) => {
-            bail!("summarize は Phase 4 で実装予定です");
+        Some(Command::Summarize { url }) => {
+            let del = cli.delegate.clone();
+            let no_del = cli.no_delegate;
+            summarize(&url, cli.timeout, del.as_ref(), no_del).await?;
         }
-        Some(Command::Extract { .. }) => {
-            bail!("extract は Phase 4 で実装予定です");
+        Some(Command::Extract { fields, url, format }) => {
+            let fmt = format.unwrap_or(cli.format);
+            let del = cli.delegate.clone();
+            let no_del = cli.no_delegate;
+            extract_fields(&fields, &url, &fmt, cli.timeout, del.as_ref(), no_del).await?;
         }
         Some(Command::Mcp) => {
             bail!("mcp は Phase 5 で実装予定です");
@@ -218,6 +226,77 @@ async fn dump(
     }
 
     Ok(())
+}
+
+async fn qa(
+    question: &str,
+    url: &Url,
+    timeout: u64,
+    delegate: Option<&DelegateTarget>,
+    no_delegate: bool,
+) -> Result<()> {
+    let doc = fetch_as_markdown(url, timeout, delegate, no_delegate).await?;
+    let llm = LlmProvider::from_env().context("LLM provider not configured")?;
+    let messages = prompts::qa_prompt(question, &doc);
+    let answer = llm.complete(messages, &CompletionConfig::default()).await
+        .context("LLM request failed")?;
+    println!("{}", answer);
+    Ok(())
+}
+
+async fn summarize(
+    url: &Url,
+    timeout: u64,
+    delegate: Option<&DelegateTarget>,
+    no_delegate: bool,
+) -> Result<()> {
+    let doc = fetch_as_markdown(url, timeout, delegate, no_delegate).await?;
+    let llm = LlmProvider::from_env().context("LLM provider not configured")?;
+    let messages = prompts::summarize_prompt(&doc);
+    let summary = llm.complete(messages, &CompletionConfig::default()).await
+        .context("LLM request failed")?;
+    println!("{}", summary);
+    Ok(())
+}
+
+async fn extract_fields(
+    fields: &str,
+    url: &Url,
+    format: &OutputFormat,
+    timeout: u64,
+    delegate: Option<&DelegateTarget>,
+    no_delegate: bool,
+) -> Result<()> {
+    let doc = fetch_as_markdown(url, timeout, delegate, no_delegate).await?;
+    let llm = LlmProvider::from_env().context("LLM provider not configured")?;
+    let config = CompletionConfig { temperature: 0.0, ..Default::default() };
+    let messages = prompts::extract_prompt(fields, &doc);
+    let result = llm.complete(messages, &config).await
+        .context("LLM request failed")?;
+
+    // JSON 出力形式の場合は JSON として再フォーマットする
+    if matches!(format, OutputFormat::Json) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&result) {
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            return Ok(());
+        }
+    }
+    println!("{}", result);
+    Ok(())
+}
+
+/// URL を取得して MarkdownDocument に変換する共通ヘルパー
+async fn fetch_as_markdown(
+    url: &Url,
+    timeout: u64,
+    delegate: Option<&DelegateTarget>,
+    no_delegate: bool,
+) -> Result<stillo_core::document::MarkdownDocument> {
+    let extractor = ContentExtractor::new(ExtractorConfig::default());
+    let raw = fetch_raw(url, timeout, delegate, no_delegate).await?;
+    let content = extractor.extract(&raw).context("failed to extract content")?;
+    let serializer = MarkdownSerializer::new(MarkdownConfig::default());
+    Ok(serializer.serialize(&content))
 }
 
 /// SPA委譲を試み、全ターゲット失敗時は静的HTMLにフォールバックする

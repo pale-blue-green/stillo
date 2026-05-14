@@ -43,13 +43,13 @@ pub enum Command {
         #[arg(long)]
         no_delegate: bool,
     },
-    /// TUIブラウザモード（Phase 3で実装予定）
+    /// TUIブラウザモード
     Browse { url: Url },
-    /// ページについてLLMに質問（Phase 4で実装予定）
+    /// ページについてLLMに質問（ANTHROPIC_API_KEY / OPENAI_API_KEY 環境変数が必要）
     Qa { question: String, url: Url },
-    /// ページを要約（Phase 4で実装予定）
+    /// ページをLLMで要約（ANTHROPIC_API_KEY / OPENAI_API_KEY 環境変数が必要）
     Summarize { url: Url },
-    /// 指定したフィールドを抽出（Phase 4で実装予定）
+    /// 指定したフィールドをLLMで抽出（ANTHROPIC_API_KEY / OPENAI_API_KEY 環境変数が必要）
     Extract {
         fields: String,
         url: Url,

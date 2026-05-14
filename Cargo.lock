@@ -1601,6 +1601,7 @@ dependencies = [
  "serde_json",
  "stillo-core",
  "stillo-fetcher",
+ "stillo-llm",
  "stillo-renderer",
  "tokio",
  "tracing",
@@ -1633,6 +1634,21 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "stillo-llm"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "stillo-core",
+ "thiserror",
+ "tokio",
  "tracing",
  "url",
 ]

@@ -1,0 +1,19 @@
+[package]
+name = "stillo-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "LLM bridge for stillo terminal browser"
+
+[dependencies]
+stillo-core = { path = "../core", version = "0.1" }
+url = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }

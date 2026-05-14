@@ -15,6 +15,7 @@ path = "src/main.rs"
 stillo-core = { path = "../core", version = "0.1" }
 stillo-fetcher = { path = "../fetcher", version = "0.1" }
 stillo-renderer = { path = "../renderer", version = "0.1" }
+stillo-llm = { path = "../llm", version = "0.1" }
 url = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
