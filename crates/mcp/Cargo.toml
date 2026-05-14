@@ -1,26 +1,20 @@
 [package]
-name = "stillo"
+name = "stillo-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "../../README.md"
-description = "AI-native terminal browser"
-
-[[bin]]
-name = "stillo"
-path = "src/main.rs"
+description = "MCP server for stillo terminal browser"
 
 [dependencies]
 stillo-core = { path = "../core", version = "0.1" }
 stillo-fetcher = { path = "../fetcher", version = "0.1" }
-stillo-renderer = { path = "../renderer", version = "0.1" }
 stillo-llm = { path = "../llm", version = "0.1" }
-stillo-mcp = { path = "../mcp", version = "0.1" }
 url = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap = { version = "4", features = ["derive"] }
+thiserror = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }

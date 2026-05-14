@@ -1602,6 +1602,7 @@ dependencies = [
  "stillo-core",
  "stillo-fetcher",
  "stillo-llm",
+ "stillo-mcp",
  "stillo-renderer",
  "tokio",
  "tracing",
@@ -1647,6 +1648,22 @@ dependencies = [
  "serde",
  "serde_json",
  "stillo-core",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "stillo-mcp"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "stillo-core",
+ "stillo-fetcher",
+ "stillo-llm",
  "thiserror",
  "tokio",
  "tracing",

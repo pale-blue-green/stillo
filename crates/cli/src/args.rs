@@ -56,7 +56,7 @@ pub enum Command {
         #[arg(long)]
         format: Option<OutputFormat>,
     },
-    /// MCPサーバーとして起動（Phase 5で実装予定）
+    /// MCPサーバーとして起動（stdio transport、JSON-RPC 2.0）
     Mcp,
 }
 

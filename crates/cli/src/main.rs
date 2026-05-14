@@ -1,6 +1,6 @@
 mod args;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 use args::{Cli, Command, DelegateTarget, OutputFormat};
 use stillo_core::{
@@ -10,6 +10,7 @@ use stillo_core::{
 use stillo_fetcher::{HttpConfig, HttpFetcher, SpaDelegationChain};
 use stillo_renderer::{TuiBrowser, TuiResult};
 use stillo_llm::{LlmProvider, CompletionConfig, prompts};
+use stillo_mcp::McpServer;
 use url::Url;
 
 #[tokio::main]
@@ -54,7 +55,7 @@ async fn main() -> Result<()> {
             extract_fields(&fields, &url, &fmt, cli.timeout, del.as_ref(), no_del).await?;
         }
         Some(Command::Mcp) => {
-            bail!("mcp は Phase 5 で実装予定です");
+            McpServer::new().run_stdio().await?;
         }
         None => {
             if let Some(url) = cli.url {
