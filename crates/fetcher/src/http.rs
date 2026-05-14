@@ -25,6 +25,7 @@ impl Default for HttpConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct HttpFetcher {
     client: Client,
 }

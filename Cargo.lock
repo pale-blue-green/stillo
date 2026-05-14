@@ -1594,7 +1594,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stillo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "stillo-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -1624,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "stillo-fetcher"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reqwest",
  "serde",
@@ -1639,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "stillo-renderer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "crossterm",

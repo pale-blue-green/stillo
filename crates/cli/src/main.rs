@@ -109,6 +109,17 @@ async fn fetch_raw(
     let raw = fetcher.fetch(url).await.with_context(|| format!("failed to fetch {}", url))?;
     tracing::debug!("fetched {} bytes (status={})", raw.bytes.len(), raw.status);
 
+    // frameset ページの場合、コンテンツが最も多いフレームを取得する
+    let raw = {
+        let frames = extractor.detect_frames(&raw);
+        if frames.is_empty() {
+            raw
+        } else {
+            tracing::debug!("frameset detected ({} frames), fetching frame contents", frames.len());
+            fetch_richest_frame(&fetcher, &extractor, frames).await.unwrap_or(raw)
+        }
+    };
+
     if no_delegate {
         return Ok(raw);
     }
@@ -128,6 +139,39 @@ async fn fetch_raw(
             delegate_or_fallback(url, raw, delegate, timeout).await
         }
     }
+}
+
+/// 複数フレームを順次取得してテキスト量が最多のものを返す。
+/// URL に menu/nav/sidebar を含むフレームは低スコアとして扱う。
+async fn fetch_richest_frame(
+    fetcher: &HttpFetcher,
+    extractor: &ContentExtractor,
+    frames: Vec<Url>,
+) -> Option<stillo_core::document::RawHtml> {
+    let mut best: Option<(stillo_core::document::RawHtml, i64)> = None;
+
+    for url in frames {
+        let Ok(raw) = fetcher.fetch(&url).await else { continue };
+        // ネストしたフレームセットはスキップ
+        if !extractor.detect_frames(&raw).is_empty() {
+            continue;
+        }
+        let url_str = raw.url.as_str().to_lowercase();
+        let nav_penalty: i64 = if url_str.contains("menu")
+            || url_str.contains("nav")
+            || url_str.contains("sidebar")
+        {
+            -100_000
+        } else {
+            0
+        };
+        let score = raw.bytes.len() as i64 + nav_penalty;
+        if best.as_ref().map_or(true, |(_, s)| score > *s) {
+            best = Some((raw, score));
+        }
+    }
+
+    best.map(|(raw, _)| raw)
 }
 
 async fn dump(
