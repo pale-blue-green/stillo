@@ -1,0 +1,13 @@
+[package]
+name = "stillo-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+url = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
+tracing = { workspace = true }

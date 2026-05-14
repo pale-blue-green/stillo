@@ -1,0 +1,27 @@
+[http]
+timeout_secs = 30
+user_agent = "stillo/0.1"
+cookie_store = true
+
+[extractor]
+min_content_length = 500
+preserve_links = true
+
+[markdown]
+max_line_width = 80
+include_links = true
+include_images = false
+
+[spa]
+delegation_chain = ["cdp", "playwright", "jina"]
+
+[spa.cdp]
+port = 9222
+
+[spa.playwright]
+socket_path = "/tmp/stillo-playwright.sock"
+
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+max_tokens = 1024

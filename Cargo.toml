@@ -1,0 +1,18 @@
+[workspace]
+members = ["crates/core", "crates/fetcher", "crates/renderer", "crates/cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["stillo contributors"]
+
+[workspace.dependencies]
+url = "2"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["std"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"

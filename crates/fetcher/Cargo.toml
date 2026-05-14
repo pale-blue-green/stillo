@@ -1,0 +1,21 @@
+[package]
+name = "stillo-fetcher"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# Chrome DevTools Protocol 委譲を有効化（Chromeが必要）
+cdp = ["dep:tokio-tungstenite"]
+default = []
+
+[dependencies]
+stillo-core = { path = "../core" }
+url = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { version = "0.12", features = ["rustls-tls", "cookies", "json"], default-features = false }
+# CDP 委譲用 WebSocket クライアント（cdp feature 有効時のみ）
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"], optional = true }

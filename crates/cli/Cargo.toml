@@ -1,0 +1,20 @@
+[package]
+name = "stillo"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "stillo"
+path = "src/main.rs"
+
+[dependencies]
+stillo-core = { path = "../core" }
+stillo-fetcher = { path = "../fetcher" }
+stillo-renderer = { path = "../renderer" }
+url = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+serde_json = { workspace = true }
