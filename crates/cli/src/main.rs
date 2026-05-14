@@ -243,7 +243,7 @@ async fn dump(
             println!("# {}", page.title);
             println!();
             // Document からプレーンテキストを抽出する
-            use stillo_core::{Block, Inline};
+            use stillo_core::Block;
             for block in &page.doc.blocks {
                 match block {
                     Block::Heading { inlines, .. } => {
