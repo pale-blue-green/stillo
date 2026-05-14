@@ -94,7 +94,7 @@ fn find_main_content(body: &Handle) -> Option<Handle> {
     let mut ancestors: Vec<Handle> = Vec::new();
     collect_candidate_scores(body, &mut ancestors, &mut candidates);
 
-    candidates
+    let best = candidates
         .into_values()
         .map(|(h, raw)| {
             let text_len = count_text(&h) as f64;
@@ -106,7 +106,50 @@ fn find_main_content(body: &Handle) -> Option<Handle> {
         })
         .filter(|(_, s)| *s > 0.0)
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(node, _)| node)
+        .map(|(node, _)| node);
+
+    // シブリング展開: ベスト候補が「繰り返しパターンの1ユニット」であれば
+    // その親コンテナへ展開する（例: ul>li>a>div → ul を返す）
+    if let Some(ref node) = best {
+        if let Some(expanded) = try_sibling_expand(node) {
+            return Some(expanded);
+        }
+    }
+    best
+}
+
+/// ベスト候補が繰り返しパターンの1ユニットであれば親コンテナへ展開する。
+///
+/// 例: `ul > li > a > div`（div がベスト候補）の場合、
+/// li が 3 つ以上あることを検出して ul を返す。
+/// 最大 3 段階まで祖先を辿る。
+fn try_sibling_expand(node: &Handle) -> Option<Handle> {
+    let mut current = node.clone();
+    for _ in 0..3 {
+        // rcdom の parent は Cell<Option<Weak<Node>>> なので take→set で安全に参照する
+        let parent = {
+            let weak = current.parent.take();
+            current.parent.set(weak.clone());
+            weak?.upgrade()?
+        };
+
+        let current_tag = match &current.data {
+            NodeData::Element { name, .. } => name.local.as_ref().to_owned(),
+            _ => return None,
+        };
+
+        let same_tag_count = parent.children.borrow().iter()
+            .filter(|c| matches!(&c.data,
+                NodeData::Element { name, .. } if name.local.as_ref() == current_tag))
+            .count();
+
+        if same_tag_count >= 3 {
+            return Some(parent);
+        }
+
+        current = parent;
+    }
+    None
 }
 
 /// p/pre/blockquote/td/li などコンテンツ信号になるノードを起点に、
