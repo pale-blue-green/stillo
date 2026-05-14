@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["stillo contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/stillo-browser/stillo"
+repository = "https://github.com/pale-blue-green/stillo"
 readme = "README.md"
 
 [workspace.dependencies]
