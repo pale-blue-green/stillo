@@ -232,43 +232,68 @@ async fn dump(
     delegate: Option<&DelegateTarget>,
     no_delegate: bool,
 ) -> Result<()> {
-    let extractor = ContentExtractor::new(ExtractorConfig::default());
     let raw = fetch_raw(url, timeout, delegate, no_delegate).await?;
-    let content = extractor.extract(&raw).with_context(|| "failed to extract content")?;
+    let page = raw_to_browse_page(raw).with_context(|| "failed to extract content")?;
 
     match format {
         OutputFormat::Markdown => {
-            let serializer = MarkdownSerializer::new(MarkdownConfig::default());
-            let doc = serializer.serialize(&content);
-            print!("{}", doc.content);
+            print!("{}", page.markdown);
         }
         OutputFormat::Plain => {
-            println!("# {}", content.title);
+            println!("# {}", page.title);
             println!();
-            print!("{}", content.body_text);
+            // Document からプレーンテキストを抽出する
+            use stillo_core::{Block, Inline};
+            for block in &page.doc.blocks {
+                match block {
+                    Block::Heading { inlines, .. } => {
+                        let text: String = inlines.iter().map(inline_to_plain).collect();
+                        println!("{}\n", text);
+                    }
+                    Block::Paragraph(inlines) => {
+                        let text: String = inlines.iter().map(inline_to_plain).collect();
+                        println!("{}\n", text);
+                    }
+                    Block::ListItem { inlines, .. } => {
+                        let text: String = inlines.iter().map(inline_to_plain).collect();
+                        println!("- {}", text);
+                    }
+                    Block::CodeBlock { content, .. } => {
+                        println!("{}\n", content);
+                    }
+                    Block::Blockquote(inlines) => {
+                        let text: String = inlines.iter().map(inline_to_plain).collect();
+                        println!("> {}\n", text);
+                    }
+                    Block::Rule => println!("---"),
+                }
+            }
         }
         OutputFormat::Json => {
             let json = serde_json::json!({
-                "url": content.url.as_str(),
-                "title": content.title,
-                "byline": content.byline,
-                "body_text": content.body_text,
-                "links": content.links.iter().map(|l| serde_json::json!({
+                "url": page.url.as_str(),
+                "title": page.title,
+                "links": page.links.iter().map(|l| serde_json::json!({
                     "text": l.text,
                     "href": l.href.as_str(),
                     "rel": l.rel,
                 })).collect::<Vec<_>>(),
-                "metadata": {
-                    "description": content.metadata.description,
-                    "og_title": content.metadata.og_title,
-                    "canonical": content.metadata.canonical.as_ref().map(|u| u.as_str()),
-                },
             });
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
     }
 
     Ok(())
+}
+
+fn inline_to_plain(inline: &stillo_core::Inline) -> String {
+    use stillo_core::Inline;
+    match inline {
+        Inline::Text(s) | Inline::Bold(s) | Inline::Italic(s)
+        | Inline::BoldItalic(s) | Inline::Code(s) => s.clone(),
+        Inline::Link { text, .. } => text.clone(),
+        Inline::SoftBreak => "\n".to_owned(),
+    }
 }
 
 async fn qa(
