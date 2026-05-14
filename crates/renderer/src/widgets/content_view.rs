@@ -1,27 +1,35 @@
+use std::mem::take;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use stillo_core::document::{ExtractedContent, ExtractedLink};
+use stillo_core::{Block, Document, Inline, document::{ExtractedContent, ExtractedLink}};
 use url::Url;
 
-/// HTML コンテンツを ratatui の Lines に変換して保持し、スクロールとリンク選択を管理する。
+const WRAP_WIDTH: usize = 80;
+const CODE_WIDTH: usize = 76;
+
+/// HTML コンテンツを意味的 AST 経由で ratatui Lines に変換し、
+/// スクロールとリンク選択を管理する。
 pub struct ContentView {
     pub lines: Vec<Line<'static>>,
-    /// (line_index, link_index) のペア。リンクが存在する行とそのリンク番号の対応
-    pub link_positions: Vec<(usize, usize)>,
     pub scroll_offset: usize,
     pub selected_link: Option<usize>,
+    /// (line_idx, link_idx_in_content_links) — navigate 用
+    pub link_positions: Vec<(usize, usize)>,
+    /// (line_idx, span_start, span_end) — ハイライト再適用用
+    link_span_ranges: Vec<(usize, usize, usize)>,
 }
 
 impl ContentView {
     pub fn from_content(content: &ExtractedContent) -> Self {
-        let mut converter = HtmlToLines::new(&content.links);
-        converter.convert(&content.body_html);
-
+        let doc = stillo_core::parse_html_to_ast(&content.body_html, &content.url);
+        let mut renderer = DocRenderer::new(&content.links);
+        renderer.render(&doc);
         Self {
-            lines: converter.lines,
-            link_positions: converter.link_positions,
+            lines: renderer.lines,
+            link_positions: renderer.link_positions,
+            link_span_ranges: renderer.link_span_ranges,
             scroll_offset: 0,
             selected_link: None,
         }
@@ -89,26 +97,23 @@ impl ContentView {
         }
     }
 
-    /// 選択状態変化後に該当行のハイライトを更新する
+    /// 選択状態変化後に span 単位でハイライトを更新する。
+    /// 行全体を上書きするのではなく span 範囲だけを変えることで、
+    /// 通常テキストのスタイルを保持できる。
     fn rebuild_link_highlights(&mut self) {
-        // 全リンク行を走査して selected/unselected スタイルを再適用
-        for (pos_idx, &(line_idx, _)) in self.link_positions.iter().enumerate() {
+        for (pos_idx, (&(line_idx, _), &(_, span_start, span_end))) in
+            self.link_positions.iter().zip(self.link_span_ranges.iter()).enumerate()
+        {
             let is_selected = self.selected_link == Some(pos_idx);
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
             if let Some(line) = self.lines.get_mut(line_idx) {
-                let style = if is_selected {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
-                } else {
-                    Style::default().fg(Color::Cyan)
-                };
-                // 行全体のスタイルを更新
-                *line = Line::styled(
-                    line.spans
-                        .iter()
-                        .map(|s| s.content.as_ref().to_owned())
-                        .collect::<Vec<_>>()
-                        .join(""),
-                    style,
-                );
+                for span in line.spans[span_start..span_end].iter_mut() {
+                    span.style = style;
+                }
             }
         }
     }
@@ -131,196 +136,323 @@ impl ContentView {
     }
 }
 
-/// body_html を ratatui の Line リストに変換する状態機械
-struct HtmlToLines<'a> {
+// ---------------------------------------------------------------------------
+// DocRenderer
+// ---------------------------------------------------------------------------
+
+/// Document → ratatui Lines の変換器
+struct DocRenderer<'a> {
     links: &'a [ExtractedLink],
     pub lines: Vec<Line<'static>>,
     pub link_positions: Vec<(usize, usize)>,
-    current_spans: Vec<Span<'static>>,
-    bold: bool,
-    italic: bool,
-    /// リンク処理中: (link_index, accumulated_text)
-    link_stack: Option<(usize, String)>,
-    list_depth: usize,
+    pub link_span_ranges: Vec<(usize, usize, usize)>,
     link_counter: usize,
+    current_spans: Vec<Span<'static>>,
+    current_len: usize,
+    /// フラッシュ待ちリンク: (link_idx_in_content, span_start, span_end)
+    pending_links: Vec<(usize, usize, usize)>,
 }
 
-impl<'a> HtmlToLines<'a> {
+impl<'a> DocRenderer<'a> {
     fn new(links: &'a [ExtractedLink]) -> Self {
         Self {
             links,
             lines: Vec::new(),
             link_positions: Vec::new(),
-            current_spans: Vec::new(),
-            bold: false,
-            italic: false,
-            link_stack: None,
-            list_depth: 0,
+            link_span_ranges: Vec::new(),
             link_counter: 0,
+            current_spans: Vec::new(),
+            current_len: 0,
+            pending_links: Vec::new(),
         }
     }
 
-    fn convert(&mut self, html: &str) {
-        let mut pos = 0;
-        let bytes = html.as_bytes();
-
-        while pos < html.len() {
-            if bytes[pos] == b'<' {
-                if let Some(close) = html[pos..].find('>') {
-                    let inner = &html[pos + 1..pos + close];
-                    let (tag, attrs, is_closing, _) = parse_tag(inner);
-                    self.handle_tag(&tag, attrs, is_closing);
-                    pos += close + 1;
-                    continue;
+    fn render(&mut self, doc: &Document) {
+        for block in &doc.blocks {
+            match block {
+                Block::Heading { level, inlines } => self.render_heading(*level, inlines),
+                Block::Paragraph(inlines) => self.render_paragraph(inlines),
+                Block::ListItem { depth, ordered, number, inlines } => {
+                    self.render_list_item(*depth, *ordered, *number, inlines);
                 }
+                Block::CodeBlock { lang, content } => self.render_code_block(lang.as_deref(), content),
+                Block::Blockquote(inlines) => self.render_blockquote(inlines),
+                Block::Rule => self.render_rule(),
             }
-            let next = html[pos..].find('<').map(|i| pos + i).unwrap_or(html.len());
-            let text = html_decode(&html[pos..next]);
-            if !text.is_empty() {
-                self.push_text(&text);
-            }
-            pos = next;
         }
-
-        // 残りのスパンをフラッシュ
+        // 末尾に未フラッシュのスパンがあれば出力する
         self.flush_line();
     }
 
-    fn handle_tag(&mut self, tag: &str, attrs: &str, is_closing: bool) {
-        match (tag, is_closing) {
-            ("h1", false) => { self.flush_line(); self.push_text("# "); self.bold = true; }
-            ("h2", false) => { self.flush_line(); self.push_text("## "); self.bold = true; }
-            ("h3", false) => { self.flush_line(); self.push_text("### "); self.bold = true; }
-            ("h4" | "h5" | "h6", false) => { self.flush_line(); self.bold = true; }
-            ("h1" | "h2" | "h3" | "h4" | "h5" | "h6", true) => {
-                self.bold = false;
-                self.flush_line();
-                self.push_empty_line();
-            }
-            ("p", false) => { self.flush_line(); }
-            ("p", true) => { self.flush_line(); self.push_empty_line(); }
-            ("br", _) => { self.flush_line(); }
-            ("hr", _) => {
-                self.flush_line();
+    fn render_heading(&mut self, level: u8, inlines: &[Inline]) {
+        let text = inlines_to_text(inlines);
+        self.push_empty_line();
+        match level {
+            1 => {
+                // タイトル行
+                let title_line = Line::from(Span::styled(
+                    text.clone(),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ));
+                self.lines.push(title_line);
+                // アンダーライン
+                let underline = "═".repeat(text.chars().count());
                 self.lines.push(Line::from(Span::styled(
-                    "─".repeat(60),
-                    Style::default().fg(Color::DarkGray),
+                    underline,
+                    Style::default().fg(Color::Yellow),
                 )));
             }
-            ("strong" | "b", false) => { self.bold = true; }
-            ("strong" | "b", true) => { self.bold = false; }
-            ("em" | "i", false) => { self.italic = true; }
-            ("em" | "i", true) => { self.italic = false; }
-            ("a", false) => {
-                // リンクインデックスを attrs の href から探す
-                let href = extract_attr(attrs, "href").unwrap_or_default();
-                let link_idx = self.links.iter().position(|l| l.href.as_str() == href
-                    || l.href.as_str().trim_end_matches('/') == href.trim_end_matches('/'));
-                let idx = link_idx.unwrap_or(self.link_counter);
-                self.link_stack = Some((idx, String::new()));
-                self.link_counter += 1;
+            2 => {
+                // "── テキスト ─────..." (合計60文字)
+                let prefix = "── ";
+                let suffix = " ";
+                let inner = format!("{}{}{}", prefix, text, suffix);
+                let pad_count = 60usize.saturating_sub(inner.chars().count());
+                let pad = "─".repeat(pad_count);
+                let full = format!("{}{}", inner, pad);
+                self.lines.push(Line::from(Span::styled(
+                    full,
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                )));
             }
-            ("a", true) => {
-                if let Some((link_idx, text)) = self.link_stack.take() {
-                    let display = format!("[{}] {}", link_idx + 1, text.trim());
-                    let line_idx = self.lines.len();
-                    self.link_positions.push((line_idx, link_idx));
+            3 => {
+                let full = format!("▸ {}", text);
+                self.lines.push(Line::from(Span::styled(
+                    full,
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                )));
+            }
+            _ => {
+                let full = format!("  § {}", text);
+                self.lines.push(Line::from(Span::styled(
+                    full,
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+            }
+        }
+        self.push_empty_line();
+    }
+
+    fn render_paragraph(&mut self, inlines: &[Inline]) {
+        self.push_empty_line();
+        self.render_inlines(inlines, Style::default(), WRAP_WIDTH);
+        self.flush_line();
+    }
+
+    fn render_list_item(&mut self, depth: usize, ordered: bool, number: usize, inlines: &[Inline]) {
+        self.flush_line();
+        let prefix = if ordered {
+            format!("{}{number}. ", "  ".repeat(depth))
+        } else {
+            format!("{}• ", "  ".repeat(depth.saturating_sub(1)))
+        };
+        let prefix_len = prefix.chars().count();
+        self.current_spans.push(Span::styled(
+            prefix,
+            Style::default().fg(Color::DarkGray),
+        ));
+        self.current_len += prefix_len;
+        let remaining = WRAP_WIDTH.saturating_sub(prefix_len);
+        self.render_inlines(inlines, Style::default(), remaining);
+        self.flush_line();
+    }
+
+    fn render_code_block(&mut self, lang: Option<&str>, content: &str) {
+        self.flush_line();
+        self.push_empty_line();
+
+        // 上境界線: ╭─ {lang} ─────╮
+        let lang_label = lang.map(|l| format!(" {} ", l)).unwrap_or_else(|| " ".to_owned());
+        let border_inner_len = CODE_WIDTH + 2; // "─ " + content + " ─"
+        let lang_pad = border_inner_len.saturating_sub(lang_label.chars().count() + 1);
+        let top = format!("╭─{}{}╮", lang_label, "─".repeat(lang_pad));
+        self.lines.push(Line::from(Span::styled(top, Style::default().fg(Color::DarkGray))));
+
+        // コンテンツ行
+        for line in content.lines() {
+            let line_len = line.chars().count();
+            let pad = CODE_WIDTH.saturating_sub(line_len);
+            let padded = format!("{}{}", line, " ".repeat(pad));
+            self.lines.push(Line::from(vec![
+                Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+                Span::styled(padded, Style::default().fg(Color::Yellow)),
+                Span::styled(" │", Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+
+        // 下境界線: ╰──────────╯
+        let bottom = format!("╰{}╯", "─".repeat(CODE_WIDTH + 2));
+        self.lines.push(Line::from(Span::styled(bottom, Style::default().fg(Color::DarkGray))));
+
+        self.push_empty_line();
+    }
+
+    fn render_blockquote(&mut self, inlines: &[Inline]) {
+        self.push_empty_line();
+        // 先頭に引用プレフィックスを追加してからインライン展開する
+        self.current_spans.push(Span::styled("▎ ", Style::default().fg(Color::Cyan)));
+        self.current_len += 2;
+        let italic_style = Style::default().add_modifier(Modifier::ITALIC);
+        self.render_inlines(inlines, italic_style, WRAP_WIDTH.saturating_sub(2));
+        self.flush_line();
+        self.push_empty_line();
+    }
+
+    fn render_rule(&mut self) {
+        self.flush_line();
+        self.lines.push(Line::from(Span::styled(
+            "─".repeat(60),
+            Style::default().fg(Color::DarkGray),
+        )));
+        self.push_empty_line();
+    }
+
+    /// インライン要素列をワードラップしながら current_spans に追加する
+    fn render_inlines(&mut self, inlines: &[Inline], base_style: Style, wrap_width: usize) {
+        for inline in inlines {
+            match inline {
+                Inline::Text(t) => self.push_words(t, base_style, wrap_width),
+                Inline::Bold(t) => {
+                    self.push_words(t, base_style.add_modifier(Modifier::BOLD), wrap_width);
+                }
+                Inline::Italic(t) => {
+                    self.push_words(t, base_style.add_modifier(Modifier::ITALIC), wrap_width);
+                }
+                Inline::BoldItalic(t) => {
+                    self.push_words(
+                        t,
+                        base_style
+                            .add_modifier(Modifier::BOLD)
+                            .add_modifier(Modifier::ITALIC),
+                        wrap_width,
+                    );
+                }
+                Inline::Code(t) => {
+                    let display = format!("`{}`", t);
+                    let display_len = display.chars().count();
+                    let need_space = self.current_len > 0;
+                    let total = display_len + if need_space { 1 } else { 0 };
+                    if self.current_len > 0 && self.current_len + total > wrap_width {
+                        self.flush_line();
+                    } else if need_space {
+                        self.current_spans.push(Span::raw(" "));
+                        self.current_len += 1;
+                    }
                     self.current_spans.push(Span::styled(
                         display,
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(Color::Yellow),
                     ));
-                    self.flush_line();
+                    self.current_len += display_len;
                 }
+                Inline::Link { text, href } => self.push_link(text, href, wrap_width),
+                Inline::SoftBreak => self.flush_line(),
             }
-            ("li", false) => {
-                self.flush_line();
-                let indent = "  ".repeat(self.list_depth.saturating_sub(1));
-                self.push_text(&format!("{}• ", indent));
-            }
-            ("ul" | "ol", false) => { self.list_depth += 1; }
-            ("ul" | "ol", true) => {
-                self.list_depth = self.list_depth.saturating_sub(1);
-                self.flush_line();
-            }
-            ("pre", false) => {
-                self.flush_line();
-                self.lines.push(Line::from(Span::styled(
-                    "```",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-            ("pre", true) => {
-                self.flush_line();
-                self.lines.push(Line::from(Span::styled(
-                    "```",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-            ("script" | "style" | "noscript" | "iframe", _) => {}
-            _ => {}
         }
     }
 
-    fn current_style(&self) -> Style {
-        let mut style = Style::default();
-        if self.bold {
-            style = style.add_modifier(Modifier::BOLD);
+    /// テキストをワード単位でラップしながら追加する
+    fn push_words(&mut self, text: &str, style: Style, wrap_width: usize) {
+        for word in text.split_whitespace() {
+            let need_space = self.current_len > 0;
+            let word_len = word.chars().count();
+            let total = word_len + if need_space { 1 } else { 0 };
+            if self.current_len > 0 && self.current_len + total > wrap_width {
+                self.flush_line();
+                self.current_spans.push(Span::styled(word.to_owned(), style));
+                self.current_len = word_len;
+            } else {
+                if need_space {
+                    self.current_spans.push(Span::raw(" "));
+                    self.current_len += 1;
+                }
+                self.current_spans.push(Span::styled(word.to_owned(), style));
+                self.current_len += word_len;
+            }
         }
-        if self.italic {
-            style = style.add_modifier(Modifier::ITALIC);
-        }
-        style
     }
 
-    fn push_text(&mut self, text: &str) {
-        if let Some((_, ref mut link_text)) = self.link_stack {
-            link_text.push_str(text);
-        } else if !text.is_empty() {
-            let style = self.current_style();
-            self.current_spans.push(Span::styled(text.to_owned(), style));
+    /// リンクを出力する。content.links に一致するものがあれば link_positions に記録する。
+    fn push_link(&mut self, text: &str, href: &str, wrap_width: usize) {
+        // content.links との照合（末尾スラッシュを無視して比較）
+        let link_idx = self.links.iter().position(|l| {
+            l.href.as_str() == href
+                || l.href.as_str().trim_end_matches('/') == href.trim_end_matches('/')
+        });
+
+        let display_num = self.link_counter + 1;
+        self.link_counter += 1;
+
+        let label = format!("[{}]", display_num);
+        let trimmed_text = text.trim();
+        let display_text = if trimmed_text.is_empty() {
+            label.clone()
+        } else {
+            format!("{} {}", label, trimmed_text)
+        };
+        let display_len = display_text.chars().count();
+        let need_space = self.current_len > 0;
+        let total = display_len + if need_space { 1 } else { 0 };
+
+        if self.current_len > 0 && self.current_len + total > wrap_width {
+            self.flush_line();
+        } else if need_space {
+            self.current_spans.push(Span::raw(" "));
+            self.current_len += 1;
+        }
+
+        let span_start = self.current_spans.len();
+        self.current_spans.push(Span::styled(
+            label,
+            Style::default().fg(Color::Cyan),
+        ));
+        if !trimmed_text.is_empty() {
+            self.current_spans.push(Span::raw(" "));
+            self.current_spans.push(Span::styled(
+                trimmed_text.to_owned(),
+                Style::default().fg(Color::Cyan),
+            ));
+        }
+        let span_end = self.current_spans.len();
+        self.current_len += display_len;
+
+        // navigate できるリンクのみ link_positions に登録する
+        if let Some(idx) = link_idx {
+            self.pending_links.push((idx, span_start, span_end));
         }
     }
 
+    /// current_spans を1行として確定し、pending_links を記録する
     fn flush_line(&mut self) {
-        if !self.current_spans.is_empty() {
-            self.lines.push(Line::from(std::mem::take(&mut self.current_spans)));
+        let line_idx = self.lines.len();
+        for (link_idx, span_start, span_end) in self.pending_links.drain(..) {
+            self.link_positions.push((line_idx, link_idx));
+            self.link_span_ranges.push((line_idx, span_start, span_end));
         }
+        if !self.current_spans.is_empty() {
+            self.lines.push(Line::from(take(&mut self.current_spans)));
+        }
+        self.current_len = 0;
     }
 
+    /// 未フラッシュのスパンを先に出力してから空行を挿入する
     fn push_empty_line(&mut self) {
+        self.flush_line();
         self.lines.push(Line::from(""));
     }
 }
 
-fn parse_tag(inner: &str) -> (String, &str, bool, bool) {
-    let is_self_closing = inner.ends_with('/');
-    let trimmed = if is_self_closing { &inner[..inner.len() - 1] } else { inner };
-    let is_closing = trimmed.starts_with('/');
-    let body = if is_closing { &trimmed[1..] } else { trimmed }.trim();
-    let (tag_name, attrs) = body
-        .split_once(|c: char| c.is_whitespace())
-        .unwrap_or((body, ""));
-    (tag_name.to_lowercase(), attrs.trim(), is_closing, is_self_closing)
-}
-
-fn extract_attr(attrs: &str, name: &str) -> Option<String> {
-    for quote in &['"', '\''] {
-        let search = format!("{}={}", name, quote);
-        if let Some(start_idx) = attrs.find(&search) {
-            let value_start = start_idx + search.len();
-            if let Some(end_offset) = attrs[value_start..].find(*quote) {
-                return Some(attrs[value_start..value_start + end_offset].to_owned());
-            }
-        }
-    }
-    None
-}
-
-fn html_decode(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
+/// Inline のテキスト部分を連結してプレーン文字列にする（ヘッダー描画用）
+fn inlines_to_text(inlines: &[Inline]) -> String {
+    inlines
+        .iter()
+        .map(|i| match i {
+            Inline::Text(s)
+            | Inline::Bold(s)
+            | Inline::Italic(s)
+            | Inline::BoldItalic(s)
+            | Inline::Code(s) => s.as_str(),
+            Inline::Link { text, .. } => text.as_str(),
+            Inline::SoftBreak => " ",
+        })
+        .collect()
 }
