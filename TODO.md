@@ -16,6 +16,11 @@
   - links が空になり、フィードとして認識されず HTML 扱いになる
   - File: `crates/core/src/rss_to_ast.rs`
 
+- [ ] [IMPROVE] ソーシャル共有ウィジェットの除外（低優先度） <!-- 2026-05-15 -->
+  - 日経新聞など CSS Modules 実装サイトで「記事を印刷する」「X（旧Twitter）」等の共有ボタンテキストが本文に混入する
+  - 誤検出リスクを考慮して対応見送り。方針は2択: (A) NOISE_CLASS_PATTERNS に "share"/"sns" 追加（30分、CSS Modules には効かない）/ (B) `<li>` テキストが SNS 名と完全一致ならスキップ（2〜3時間、CSS Modules も対応可だが本文 SNS 言及を誤除外するリスクあり）
+  - File: `crates/core/src/extractor/readability.rs`
+
 - [x] [BUG] Classmethod dev blog の本文抽出が薄い <!-- 2026-05-15, fixed 2026-05-15 -->
   - `https://dev.classmethod.jp/articles/` の記事で readability が本文を取得できず目次・関連記事のみになる（SPA委譲なしで13行しか取得できない）
   - 原因: `is_noise` が `val.contains(pattern)` で部分文字列一致していたため、Tailwind の `shadow-2xs` クラスが `"ad"` パターンに誤ヒットして記事ラッパー全体をスキップしていた
