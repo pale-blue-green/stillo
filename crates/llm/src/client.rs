@@ -50,7 +50,10 @@ pub enum LlmProvider {
 
 impl LlmProvider {
     /// 環境変数から自動的にプロバイダーを選択する。
-    /// ANTHROPIC_API_KEY → Anthropic、OPENAI_API_KEY → OpenAI、未設定 → Ollama
+    /// ANTHROPIC_API_KEY → Anthropic
+    /// OPENAI_API_KEY    → OpenAI 互換
+    /// LLAMA_CPP_BASE_URL → llama.cpp サーバー（OpenAI 互換、API キー不要）
+    /// 未設定             → Ollama (localhost:11434)
     pub fn from_env() -> Result<Self, LlmError> {
         if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
             let model = std::env::var("ANTHROPIC_MODEL")
@@ -70,6 +73,15 @@ impl LlmProvider {
                 Some(api_key),
                 model,
             )));
+        }
+
+        // llama.cpp サーバー: OpenAI 互換 API を持つがキー不要
+        if let Ok(url_str) = std::env::var("LLAMA_CPP_BASE_URL") {
+            let base_url = url_str.parse()
+                .map_err(|_| LlmError::Http(format!("invalid LLAMA_CPP_BASE_URL: {}", url_str)))?;
+            let model = std::env::var("LLAMA_CPP_MODEL")
+                .unwrap_or_else(|_| "default".to_owned());
+            return Ok(Self::OpenAiCompat(OpenAiCompatClient::new(base_url, None, model)));
         }
 
         // Ollama をローカルフォールバックとして試みる
