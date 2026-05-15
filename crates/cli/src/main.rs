@@ -135,12 +135,12 @@ fn raw_to_browse_page(raw: stillo_core::document::RawHtml) -> Result<stillo_core
     })
 }
 
-/// XML のバイト列先頭を見て RSS または Atom らしいかを判定する。
+/// XML のバイト列先頭を見て RSS / Atom / RSS 1.0(RDF) らしいかを判定する。
 /// Content-Type だけでは application/xml と返すサーバがあるため本文も確認する。
 fn looks_like_feed(bytes: &[u8]) -> bool {
     let head = &bytes[..bytes.len().min(512)];
     let s = String::from_utf8_lossy(head).to_lowercase();
-    s.contains("<rss") || s.contains("<feed")
+    s.contains("<rss") || s.contains("<feed") || s.contains("xmlns=\"http://purl.org/rss/")
 }
 
 async fn fetch_raw(
