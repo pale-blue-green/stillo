@@ -51,3 +51,4 @@ async/await を使用。.then() チェーン禁止。
 - MCP の stdout 書き込みはバッファリングして都度 flush すること
 - `ParsedDocument` は `Rc<Node>` を含むため `Send` 非対応。`extract()` は同期関数として実装し、async 境界をまたがない
 - `markup5ever_rcdom::Handle` は `Rc<Node>` のエイリアス。DOM操作は単一スレッドで完結させる
+- CSS クラスのノイズ判定は `val.contains(pattern)` ではなく、スペース→ハイフンで分解したコンポーネント単位の完全一致を使う。`"shadow-2xs"` が `"ad"` にヒットするような誤検出を防ぐため

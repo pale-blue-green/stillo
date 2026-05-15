@@ -230,12 +230,12 @@ fn class_score(handle: &Handle) -> f64 {
         }
         let val = attr.value.as_ref().to_lowercase();
         for pattern in CONTENT_CLASS_PATTERNS {
-            if val.contains(pattern) {
+            if class_contains_pattern(&val, pattern) {
                 score += 10.0;
             }
         }
         for pattern in NOISE_CLASS_PATTERNS {
-            if val.contains(pattern) {
+            if class_contains_pattern(&val, pattern) {
                 score -= 10.0;
             }
         }
@@ -258,7 +258,7 @@ fn is_noise(handle: &Handle) -> bool {
                 }
                 let val = attr.value.as_ref().to_lowercase();
                 for pattern in NOISE_CLASS_PATTERNS {
-                    if val.contains(pattern) {
+                    if class_contains_pattern(&val, pattern) {
                         return true;
                     }
                 }
@@ -267,6 +267,18 @@ fn is_noise(handle: &Handle) -> bool {
         }
         _ => false,
     }
+}
+
+/// CSSクラス文字列がパターンに一致するか、ハイフン区切りのコンポーネント単位で確認する。
+/// "shadow-2xs" が "ad" にマッチする誤検出を防ぐため、
+/// スペースで個々のクラス名に分割してからハイフンで分解して照合する。
+fn class_contains_pattern(class_val: &str, pattern: &str) -> bool {
+    class_val.split_whitespace().any(|token| {
+        // Tailwind のレスポンシブプレフィックス (sm:, md:, lg: など) を除去
+        let bare = token.split(':').last().unwrap_or(token);
+        // ハイフン区切りのコンポーネントが完全一致するか確認
+        bare.split('-').any(|part| part == pattern)
+    })
 }
 
 fn count_text(handle: &Handle) -> usize {
