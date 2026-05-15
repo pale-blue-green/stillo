@@ -1,8 +1,8 @@
 # stillo 実装仕様書
 
-**バージョン**: 0.1.0-draft  
+**バージョン**: 0.1.8  
 **言語**: Rust (edition 2021)  
-**策定日**: 2026-05-14
+**策定日**: 2026-05-14（最終更新: 2026-05-15）
 
 ---
 
@@ -36,33 +36,56 @@ stillo/
 ├── Cargo.toml                  # workspace root
 ├── crates/
 │   ├── cli/                    # エントリポイント・引数解析
-│   │   └── src/main.rs
+│   │   └── src/
+│   │       ├── main.rs
+│   │       └── args.rs
 │   ├── core/                   # ドメインロジック（副作用ゼロ）
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── document.rs     # ドメイン型
+│   │       ├── ast.rs          # Document / Block / Inline AST型
+│   │       ├── document.rs     # ドメイン型（RawHtml, ExtractedContent 等）
 │   │       ├── extractor.rs    # コンテンツ抽出ロジック
-│   │       └── markdown.rs     # Markdownシリアライズ
+│   │       ├── extractor/
+│   │       │   ├── readability.rs
+│   │       │   └── spa_detection.rs
+│   │       ├── html_to_ast.rs  # HTML → Document 変換
+│   │       ├── rss_to_ast.rs   # RSS/Atom/RDF → BrowsePage 変換
+│   │       ├── markdown_to_ast.rs # Markdown → BrowsePage 変換
+│   │       └── markdown.rs     # ExtractedContent → MarkdownDocument シリアライズ
 │   ├── fetcher/                # HTTP取得レイヤー
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── http.rs         # reqwest ラッパー
-│   │       └── spa.rs          # SPA委譲チェーン
+│   │       └── spa/
+│   │           ├── mod.rs      # SpaDelegationChain
+│   │           ├── cdp.rs      # Chrome DevTools Protocol（cdp feature）
+│   │           ├── playwright.rs
+│   │           ├── jina.rs
+│   │           └── firecrawl.rs
 │   ├── renderer/               # TUI表示
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       └── tui.rs          # ratatui ビュー
+│   │       ├── tui.rs          # TuiBrowser メインループ
+│   │       └── widgets/
+│   │           ├── content_view.rs
+│   │           ├── link_bar.rs
+│   │           └── status_bar.rs
 │   ├── llm/                    # LLMブリッジ
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── client.rs       # API抽象層
+│   │       ├── client.rs       # LlmProvider enum + AnthropicClient / OpenAiCompatClient
 │   │       └── prompts.rs      # プロンプトテンプレート
 │   └── mcp/                    # MCPサーバー
 │       └── src/
 │           ├── lib.rs
-│           └── server.rs       # stdio transport
+│           ├── server.rs       # stdio transport（JSON-RPC 2.0）
+│           └── tools/
+│               ├── mod.rs
+│               ├── fetch_url.rs
+│               ├── read_links.rs
+│               └── extract_structured.rs
 ├── config/
-│   └── default.toml            # デフォルト設定
+│   └── default.toml            # 設定リファレンス（現時点では実行時に読み込まれない）
 └── CLAUDE.md                   # AI協働ガイド
 ```
 
@@ -73,6 +96,7 @@ cli → fetcher → core
 cli → renderer → core
 cli → llm → core
 cli → mcp → fetcher → core
+         └→ llm → core
 ```
 
 `core` は他クレートに依存しない。副作用は `fetcher` / `llm` / `mcp` に閉じる。
@@ -86,10 +110,10 @@ cli → mcp → fetcher → core
 | 用語 | 定義 |
 |------|------|
 | `RawHtml` | HTTP取得した生のHTMLバイト列 |
-| `ParsedDocument` | html5everでパースしたDOMツリー |
 | `ExtractedContent` | Readabilityロジックで抽出したメインコンテンツ |
 | `MarkdownDocument` | LLMに渡すMarkdown文字列 |
-| `FetchResult` | 取得結果（成功・SPA検出・失敗）の直和型 |
+| `Document` | HTML/RSS/Markdownから変換したセマンティックAST |
+| `BrowsePage` | TUIに渡すフォーマット非依存のページ表現 |
 | `DelegationTarget` | SPA描画委譲先の選択肢 |
 
 ### 3.2 コアドメイン型
@@ -104,15 +128,6 @@ pub struct RawHtml {
     pub url: Url,
     pub content_type: String,
     pub status: u16,
-}
-
-/// パース済みドキュメント
-#[derive(Debug)]
-pub struct ParsedDocument {
-    pub url: Url,
-    pub title: Option<String>,
-    pub lang: Option<String>,
-    pub root: NodeHandle,          // html5ever の NodeHandle
 }
 
 /// 抽出済みコンテンツ（副作用ゼロの純粋データ）
@@ -150,9 +165,54 @@ pub struct MarkdownDocument {
     pub source_url: Url,
     pub extracted_at: DateTime<Utc>,
 }
+
+/// フォーマット非依存のブラウズ用ページ表現。
+/// HTML / RSS / Markdown など各入力から変換して TuiBrowser に渡す。
+#[derive(Debug, Clone)]
+pub struct BrowsePage {
+    pub title: String,
+    pub url: Url,
+    pub doc: Document,
+    pub links: Vec<ExtractedLink>,
+    pub markdown: String,           // TUI の 'd' キー dump 用
+}
 ```
 
-### 3.3 SPA検出と委譲の状態モデル
+### 3.3 セマンティックAST
+
+```rust
+// crates/core/src/ast.rs
+
+/// ページのセマンティック構造を表す中間表現。
+/// body_html → html_to_ast がビルドし、renderer が消費する。
+#[derive(Debug, Clone, Default)]
+pub struct Document {
+    pub blocks: Vec<Block>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Block {
+    Heading { level: u8, inlines: Vec<Inline> },
+    Paragraph(Vec<Inline>),
+    ListItem { depth: usize, ordered: bool, number: usize, inlines: Vec<Inline> },
+    CodeBlock { lang: Option<String>, content: String },
+    Blockquote(Vec<Inline>),
+    Rule,
+}
+
+#[derive(Debug, Clone)]
+pub enum Inline {
+    Text(String),
+    Bold(String),
+    Italic(String),
+    BoldItalic(String),
+    Code(String),
+    Link { text: String, href: String },
+    SoftBreak,
+}
+```
+
+### 3.4 SPA検出と委譲の状態モデル
 
 ```rust
 // crates/core/src/document.rs
@@ -160,11 +220,8 @@ pub struct MarkdownDocument {
 /// SPA判定結果（網羅的列挙）
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpaDetection {
-    /// 静的HTMLとして処理可能
     Static,
-    /// SPAと判定: 本文テキストが閾値未満
     SuspectedSpa { text_length: usize },
-    /// JSフレームワーク検出
     FrameworkDetected { framework: JsFramework },
 }
 
@@ -181,32 +238,11 @@ pub enum JsFramework {
 /// 委譲先（優先順位順）
 #[derive(Debug, Clone, PartialEq)]
 pub enum DelegationTarget {
-    /// ローカルCDP（Ferrum経由）
     LocalCdp { port: u16 },
-    /// Playwright デーモン（Unix socket）
     PlaywrightDaemon { socket_path: PathBuf },
-    /// Jina Reader API
     JinaReader { api_key: Option<String> },
-    /// Firecrawl（self-host or API）
     Firecrawl { base_url: Url, api_key: String },
-    /// フォールバック不可
     Unavailable { reason: String },
-}
-
-/// フェッチ結果（直和型で網羅）
-#[derive(Debug)]
-pub enum FetchResult {
-    /// 静的HTML取得成功
-    Static(RawHtml),
-    /// SPA検出 → 委譲先とともに返す
-    SpaDelegated {
-        detection: SpaDetection,
-        target: DelegationTarget,
-    },
-    /// 委譲後の取得成功
-    DelegatedHtml(RawHtml),
-    /// 取得失敗
-    Failed(FetchError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -233,13 +269,6 @@ pub enum FetchError {
 ```rust
 // crates/fetcher/src/http.rs
 
-use reqwest::{Client, ClientBuilder};
-
-pub struct HttpFetcher {
-    client: Client,
-    config: HttpConfig,
-}
-
 pub struct HttpConfig {
     pub timeout_secs: u64,          // default: 30
     pub follow_redirects: bool,     // default: true
@@ -249,86 +278,61 @@ pub struct HttpConfig {
     pub cookie_store: bool,         // default: true
 }
 
+pub struct HttpFetcher {
+    client: Client,
+}
+
 impl HttpFetcher {
     pub fn new(config: HttpConfig) -> Self {
         let client = ClientBuilder::new()
-            .http2_prior_knowledge()              // HTTP/2 優先
-            .use_rustls_tls()                     // rustls（TLS 1.3）
-            .redirect(Policy::limited(config.max_redirects))
+            .use_rustls_tls()
+            .redirect(redirect_policy)
             .cookie_store(config.cookie_store)
             .timeout(Duration::from_secs(config.timeout_secs))
             .user_agent(&config.user_agent)
             .build()
             .expect("failed to build HTTP client");
-        Self { client, config }
+        Self { client }
     }
 
-    pub async fn fetch(&self, url: &Url) -> Result<RawHtml, FetchError> {
-        // 実装: GET → レスポンス → RawHtml
-    }
+    pub async fn fetch(&self, url: &Url) -> Result<RawHtml, FetchError> { ... }
 }
 ```
 
 **採用クレート**:
-- `reqwest` with `rustls-tls` feature（TLS 1.3、HTTP/2）
-- `cookie_store` feature（セッション管理）
+- `reqwest` with `rustls-tls`, `cookies`, `json` features
 
 ### 4.2 SPA委譲チェーン
 
 ```rust
-// crates/fetcher/src/spa.rs
+// crates/fetcher/src/spa/mod.rs
 
 pub struct SpaDelegationChain {
-    targets: Vec<DelegationTarget>,   // 優先順位順のリスト
+    targets: Vec<DelegationTarget>,
+    http: Client,
 }
 
 impl SpaDelegationChain {
-    /// 設定ファイルと環境から利用可能なターゲットを構築
-    pub fn from_config(config: &SpaConfig) -> Self { ... }
+    /// 環境変数とファイルシステムから利用可能なターゲットを構築する
+    pub fn from_env(cdp_port: u16) -> Self { ... }
 
-    /// フォールバックチェーンを実行
-    pub async fn fetch_with_js(&self, url: &Url) -> Result<RawHtml, FetchError> {
-        for target in &self.targets {
-            match self.try_target(target, url).await {
-                Ok(html) => return Ok(html),
-                Err(e) => {
-                    tracing::warn!("delegation target {:?} failed: {}", target, e);
-                    continue;
-                }
-            }
-        }
-        Err(FetchError::NoDelegationAvailable)
-    }
+    /// 特定のターゲットのみを使うチェーンを構築する
+    pub fn with_single_target(target: DelegationTarget) -> Self { ... }
 
-    async fn try_target(
-        &self,
-        target: &DelegationTarget,
-        url: &Url,
-    ) -> Result<RawHtml, FetchError> {
-        match target {
-            DelegationTarget::LocalCdp { port } => self.fetch_via_cdp(*port, url).await,
-            DelegationTarget::PlaywrightDaemon { socket_path } => {
-                self.fetch_via_playwright(socket_path, url).await
-            }
-            DelegationTarget::JinaReader { api_key } => {
-                self.fetch_via_jina(api_key.as_deref(), url).await
-            }
-            DelegationTarget::Firecrawl { base_url, api_key } => {
-                self.fetch_via_firecrawl(base_url, api_key, url).await
-            }
-            DelegationTarget::Unavailable { reason } => {
-                Err(FetchError::DelegationFailed(reason.clone()))
-            }
-        }
-    }
+    /// フォールバックチェーンを実行し、最初に成功したターゲットの結果を返す
+    pub async fn fetch_with_js(&self, url: &Url) -> Result<RawHtml, FetchError> { ... }
 }
 ```
 
-**デフォルト優先順位**（設定ファイルで変更可）:
-1. `LocalCdp` — Chrome/Chromiumがローカルに存在する場合
-2. `PlaywrightDaemon` — `stillo daemon` で常駐起動している場合
-3. `JinaReader` — `JINA_API_KEY` 環境変数があれば有料、なければ無料tier
-4. `Firecrawl` — `FIRECRAWL_URL` + `FIRECRAWL_API_KEY` 環境変数がある場合
+**デフォルト優先順位**（`from_env` での構築順）:
+1. `LocalCdp` — 常にリストに追加（到達確認は fetch 時）
+2. `PlaywrightDaemon` — `/tmp/stillo-playwright.sock` が存在すれば追加
+3. `JinaReader` — 常に追加（`JINA_API_KEY` があれば認証付き）
+4. `Firecrawl` — `FIRECRAWL_URL` + `FIRECRAWL_API_KEY` が両方設定されていれば追加
+
+全ターゲット失敗時は静的HTMLにフォールバック。
+
+**CDPについて**: Chrome DevTools Protocol 実装は `cdp` feature フラグで有効化。`tokio-tungstenite` を使ったWebSocket接続で実装（`chromiumoxide` 等の外部クレートは使用しない）。
 
 ---
 
@@ -340,49 +344,43 @@ pub struct ContentExtractor {
 }
 
 pub struct ExtractorConfig {
-    /// 本文とみなす最小テキスト長（SPA判定にも使用）
     pub min_content_length: usize,       // default: 500
-    /// 除去するセレクタ（nav, header, footer etc.）
     pub noise_selectors: Vec<String>,
-    /// リンクを保持するか
     pub preserve_links: bool,            // default: true
 }
 
 impl ContentExtractor {
     /// RawHtml → ExtractedContent（純粋関数）
-    pub fn extract(&self, raw: &RawHtml) -> Result<ExtractedContent, ExtractionError> {
-        let document = self.parse_html(raw)?;
-        let spa_detection = self.detect_spa(&document);
-        let content = self.readability_extract(&document)?;
-        Ok(content)
-    }
+    pub fn extract(&self, raw: &RawHtml) -> Result<ExtractedContent, ExtractionError> { ... }
 
     /// SPA判定（副作用ゼロ）
-    fn detect_spa(&self, doc: &ParsedDocument) -> SpaDetection {
-        let text_len = extract_text_length(doc);
-        if text_len < self.config.min_content_length {
-            return SpaDetection::SuspectedSpa { text_length: text_len };
-        }
-        if let Some(framework) = detect_js_framework(doc) {
-            return SpaDetection::FrameworkDetected { framework };
-        }
-        SpaDetection::Static
-    }
+    pub fn detect_spa_for(&self, raw: &RawHtml) -> Result<SpaDetection, ExtractionError> { ... }
+
+    /// frameset ページのフレームURL一覧を返す（空ならframeset非検出）
+    pub fn detect_frames(&self, raw: &RawHtml) -> Vec<Url> { ... }
 }
 ```
 
-### 5.1 Readabilityロジック
+### 5.1 コンテンツ変換パイプライン
 
-Mozilla Readability.jsのRust移植として以下のアルゴリズムを実装する。
+入力の Content-Type とボディ内容に応じてパイプラインを切り替える。
+
+| 入力形式 | 変換先 | 実装 |
+|----------|--------|------|
+| HTML（デフォルト） | `ExtractedContent` → `Document` | `extractor.extract()` + `html_to_ast` |
+| RSS / Atom / RDF | `BrowsePage` | `rss_to_ast` (`roxmltree`) |
+| Markdown / plain text | `BrowsePage` | `markdown_to_ast` (`pulldown-cmark`) |
+
+### 5.2 Readabilityロジック
+
+Mozilla Readability.jsのRust移植として以下のアルゴリズムを実装。
 
 1. **ノイズ除去**: `<nav>`, `<header>`, `<footer>`, `<aside>`, `class="sidebar"` 等を除去
 2. **スコアリング**: `<p>` タグのテキスト密度、リンク密度比でノードをスコアリング
 3. **本文抽出**: 最高スコアのコンテナノード以下をメインコンテンツとして採用
 4. **クリーンアップ**: 残存する低スコアノードを除去
 
-**既存クレートの調査対象**:
-- `readability` crate（存在する場合は採用を検討）
-- なければ `html5ever` + 独自実装
+**CSSクラスのノイズ判定**: `val.contains(pattern)` ではなく、スペース・ハイフンで分解したコンポーネント単位の完全一致を使用（`"shadow-2xs"` が `"ad"` にヒットするような誤検出を防ぐため）。
 
 ---
 
@@ -394,9 +392,9 @@ pub struct MarkdownSerializer {
 }
 
 pub struct MarkdownConfig {
-    pub max_line_width: usize,      // default: 80（pager表示向け）
+    pub max_line_width: usize,      // default: 80
     pub include_links: bool,        // default: true
-    pub include_images: bool,       // default: false（テキスト優先）
+    pub include_images: bool,       // default: false
     pub heading_style: HeadingStyle,
 }
 
@@ -408,22 +406,7 @@ pub enum HeadingStyle {
 
 impl MarkdownSerializer {
     /// ExtractedContent → MarkdownDocument（純粋関数）
-    pub fn serialize(&self, content: &ExtractedContent) -> MarkdownDocument {
-        let mut out = String::new();
-        // title
-        writeln!(out, "# {}", content.title);
-        if let Some(byline) = &content.byline {
-            writeln!(out, "*{}*\n", byline);
-        }
-        writeln!(out, "> Source: {}\n", content.url);
-        // body
-        out.push_str(&self.html_to_markdown(&content.body_html));
-        MarkdownDocument {
-            content: out,
-            source_url: content.url.clone(),
-            extracted_at: Utc::now(),
-        }
-    }
+    pub fn serialize(&self, content: &ExtractedContent) -> MarkdownDocument { ... }
 }
 ```
 
@@ -442,15 +425,13 @@ SUBCOMMANDS:
   qa          ページについてLLMに質問
   summarize   ページを要約
   extract     指定した情報を抽出
-  daemon      Playwright委譲デーモンを起動
   mcp         MCPサーバーとして起動（stdio）
 
 OPTIONS:
   --format <FORMAT>     出力形式 [markdown|plain|json] (default: markdown)
-  --delegate <TARGET>   SPA委譲先を明示 [cdp|playwright|jina|firecrawl]
+  --delegate <TARGET>   SPA委譲先を明示 [auto|cdp|playwright|jina|firecrawl]
   --no-delegate         JS委譲を無効化（静的HTMLのみ）
   --timeout <SECS>      タイムアウト秒数 (default: 30)
-  --config <PATH>       設定ファイルパス
   -v, --verbose         詳細ログ出力
 ```
 
@@ -476,7 +457,7 @@ stillo extract --format json "タイトル,著者,公開日" https://example.com
 stillo mcp
 ```
 
-### 7.3 引数解析クレート
+### 7.3 引数解析
 
 `clap` v4（`derive` feature）を使用。
 
@@ -487,31 +468,41 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// デフォルトはbrowseモード
     pub url: Option<Url>,
 
-    #[arg(long, default_value = "markdown")]
+    #[arg(long, default_value = "markdown", global = true)]
     pub format: OutputFormat,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub delegate: Option<DelegateTarget>,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub no_delegate: bool,
 
-    #[arg(long, default_value = "30")]
+    #[arg(long, default_value = "30", global = true)]
     pub timeout: u64,
+
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
 }
 
 #[derive(Subcommand)]
 pub enum Command {
     Browse { url: Url },
-    Dump { url: Url, #[arg(long)] format: Option<OutputFormat> },
+    Dump { url: Url, #[arg(long)] format: Option<OutputFormat>, ... },
     Qa { question: String, url: Url },
     Summarize { url: Url },
     Extract { fields: String, url: Url, #[arg(long)] format: Option<OutputFormat> },
-    Daemon,
     Mcp,
+}
+
+#[derive(ValueEnum)]
+pub enum DelegateTarget {
+    Auto,       // SPA検出時に自動委譲チェーン
+    Cdp,
+    Playwright,
+    Jina,
+    Firecrawl,
 }
 ```
 
@@ -523,7 +514,7 @@ pub enum Command {
 
 `ratatui` + `crossterm`
 
-### 8.2 UIコンポーネント
+### 8.2 UIレイアウト
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -538,7 +529,7 @@ pub enum Command {
 │  [2] Another link                                   │
 │                                                     │
 ├─────────────────────────────────────────────────────┤
-│ [Enter]follow  [Tab]next-link  [?]ask-AI  [d]dump   │
+│ [Enter]follow  [Tab]next-link  [d]dump  [U]url      │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -554,9 +545,8 @@ pub enum Command {
 | `U` | URLを直接入力 |
 | `/` | ページ内検索 |
 | `n` | 次の検索結果 |
-| `d` | Markdown dump |
-| `?` | LLMへ質問（インラインプロンプト） |
-| `q` | 終了 |
+| `d` | Markdown dump（stdout出力後終了） |
+| `q` / `Ctrl+C` | 終了 |
 
 ---
 
@@ -564,79 +554,68 @@ pub enum Command {
 
 ### 9.1 API抽象層
 
+async trait の複雑さを避けるため、enum ディスパッチで実装する。
+
 ```rust
 // crates/llm/src/client.rs
-
-#[async_trait]
-pub trait LlmClient: Send + Sync {
-    async fn complete(
-        &self,
-        messages: Vec<Message>,
-        config: &CompletionConfig,
-    ) -> Result<CompletionStream, LlmError>;
-}
 
 pub struct CompletionConfig {
     pub max_tokens: u32,    // default: 1024
     pub temperature: f32,   // default: 0.3（事実抽出向け）
-    pub stream: bool,       // default: true
 }
 
-/// 実装: Claude（Anthropic API）
+/// 利用可能な LLM プロバイダーを保持する enum。
+pub enum LlmProvider {
+    Anthropic(AnthropicClient),
+    OpenAiCompat(OpenAiCompatClient),
+}
+
+impl LlmProvider {
+    /// 環境変数から自動的にプロバイダーを選択する。
+    /// 優先順位: ANTHROPIC_API_KEY → OPENAI_API_KEY → LLAMA_CPP_BASE_URL → Ollama
+    pub fn from_env() -> Result<Self, LlmError> { ... }
+
+    pub async fn complete(
+        &self,
+        messages: Vec<Message>,
+        config: &CompletionConfig,
+    ) -> Result<String, LlmError> { ... }
+}
+
 pub struct AnthropicClient {
     api_key: String,
-    model: String,          // default: "claude-sonnet-4-5"
+    model: String,    // ANTHROPIC_MODEL または "claude-sonnet-4-5"
     http: reqwest::Client,
 }
 
-/// 実装: OpenAI互換
+/// OpenAI / Ollama / LM Studio / llama.cpp に対応する汎用クライアント
 pub struct OpenAiCompatClient {
-    base_url: Url,          // OpenAI / Ollama / LM Studio
+    base_url: Url,
     api_key: Option<String>,
     model: String,
     http: reqwest::Client,
 }
 ```
 
-### 9.2 プロンプトテンプレート
+### 9.2 LLMプロバイダー設定
+
+| 優先度 | プロバイダー | 環境変数 |
+|--------|-------------|----------|
+| 1 | Anthropic | `ANTHROPIC_API_KEY`（モデル: `ANTHROPIC_MODEL`） |
+| 2 | OpenAI互換 | `OPENAI_API_KEY`（ベースURL: `OPENAI_BASE_URL`、モデル: `OPENAI_MODEL`） |
+| 3 | llama.cpp | `LLAMA_CPP_BASE_URL`（モデル: `LLAMA_CPP_MODEL`、APIキー不要） |
+| 4 | Ollama | `OLLAMA_BASE_URL`（デフォルト `http://localhost:11434/`）、`OLLAMA_MODEL` |
+
+### 9.3 プロンプトテンプレート
 
 ```rust
 // crates/llm/src/prompts.rs
 
-pub fn summarize_prompt(doc: &MarkdownDocument) -> Vec<Message> {
-    vec![
-        Message::system("You are a precise summarizer. Respond in the same language as the document. Be concise."),
-        Message::user(format!(
-            "以下のWebページを3-5文で要約してください。\n\nURL: {}\n\n{}",
-            doc.source_url,
-            truncate(&doc.content, 6000)
-        )),
-    ]
-}
+const MAX_CONTENT_CHARS: usize = 6000;
 
-pub fn qa_prompt(question: &str, doc: &MarkdownDocument) -> Vec<Message> {
-    vec![
-        Message::system("Answer questions about the provided web page content. Be direct and cite the relevant parts."),
-        Message::user(format!(
-            "以下のWebページについて質問に答えてください。\n\n質問: {}\n\nURL: {}\n\n{}",
-            question,
-            doc.source_url,
-            truncate(&doc.content, 6000)
-        )),
-    ]
-}
-
-pub fn extract_prompt(fields: &str, doc: &MarkdownDocument) -> Vec<Message> {
-    vec![
-        Message::system("Extract structured information from the web page. Return JSON only, no explanation."),
-        Message::user(format!(
-            "以下のフィールドをJSON形式で抽出してください: {}\n\nURL: {}\n\n{}",
-            fields,
-            doc.source_url,
-            truncate(&doc.content, 6000)
-        )),
-    ]
-}
+pub fn summarize_prompt(doc: &MarkdownDocument) -> Vec<Message> { ... }
+pub fn qa_prompt(question: &str, doc: &MarkdownDocument) -> Vec<Message> { ... }
+pub fn extract_prompt(fields: &str, doc: &MarkdownDocument) -> Vec<Message> { ... }
 ```
 
 ---
@@ -659,11 +638,6 @@ pub fn extract_prompt(fields: &str, doc: &MarkdownDocument) -> Vec<Message> {
             "type": "string",
             "enum": ["markdown", "plain", "json"],
             "default": "markdown"
-          },
-          "delegate": {
-            "type": "string",
-            "enum": ["auto", "cdp", "jina", "none"],
-            "default": "auto"
           }
         },
         "required": ["url"]
@@ -682,7 +656,7 @@ pub fn extract_prompt(fields: &str, doc: &MarkdownDocument) -> Vec<Message> {
     },
     {
       "name": "extract_structured",
-      "description": "Extract specific fields from a page as JSON.",
+      "description": "Extract specific fields from a page as JSON using LLM. Requires ANTHROPIC_API_KEY or OPENAI_API_KEY.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -700,10 +674,29 @@ pub fn extract_prompt(fields: &str, doc: &MarkdownDocument) -> Vec<Message> {
 }
 ```
 
-### 10.2 起動方法（Claude Code設定）
+### 10.2 サーバー実装
+
+ユニット構造体として実装。状態は持たず、各リクエストで依存オブジェクトを生成する。
+
+```rust
+// crates/mcp/src/server.rs
+
+pub struct McpServer;
+
+impl McpServer {
+    pub fn new() -> Self { Self }
+
+    /// stdin から改行区切り JSON-RPC を読み、stdout へレスポンスを書く。
+    /// stdout への書き込みは毎回 flush する。
+    pub async fn run_stdio(&self) -> Result<()> { ... }
+}
+```
+
+MCP プロトコルバージョン: `2024-11-05`
+
+### 10.3 起動方法（Claude Code設定）
 
 ```json
-// ~/.claude/claude_desktop_config.json
 {
   "mcpServers": {
     "stillo": {
@@ -714,40 +707,14 @@ pub fn extract_prompt(fields: &str, doc: &MarkdownDocument) -> Vec<Message> {
 }
 ```
 
-### 10.3 トランスポート
-
-MCP仕様のstdio transport（JSON-RPC 2.0）を実装する。
-
-```rust
-// crates/mcp/src/server.rs
-
-pub struct McpServer {
-    fetcher: Arc<HttpFetcher>,
-    extractor: Arc<ContentExtractor>,
-    serializer: Arc<MarkdownSerializer>,
-    spa_chain: Arc<SpaDelegationChain>,
-}
-
-impl McpServer {
-    pub async fn run_stdio(&self) -> Result<(), McpError> {
-        let stdin = tokio::io::stdin();
-        let stdout = tokio::io::stdout();
-        // JSON-RPC 2.0 リクエストを読み取り、ツールを実行し、レスポンスを返す
-        loop {
-            let request = self.read_request(&mut stdin).await?;
-            let response = self.handle_request(request).await;
-            self.write_response(&mut stdout, response).await?;
-        }
-    }
-}
-```
-
 ---
 
 ## 11. 設定ファイル
 
+`config/default.toml` はデフォルト値のリファレンスとして管理する。現時点では実行時に読み込まれず、各設定値はハードコードされたデフォルトと環境変数で供給される。
+
 ```toml
-# ~/.config/stillo/config.toml
+# config/default.toml（リファレンス）
 
 [http]
 timeout_secs = 30
@@ -764,30 +731,18 @@ include_links = true
 include_images = false
 
 [spa]
-# 委譲先の優先順位（上から試行）
 delegation_chain = ["cdp", "playwright", "jina"]
 
 [spa.cdp]
-port = 9222                     # Chrome --remote-debugging-port
+port = 9222
 
 [spa.playwright]
 socket_path = "/tmp/stillo-playwright.sock"
 
-[spa.jina]
-# JINA_API_KEY 環境変数から自動取得
-
-[spa.firecrawl]
-# FIRECRAWL_URL / FIRECRAWL_API_KEY 環境変数から自動取得
-
 [llm]
-provider = "anthropic"          # anthropic | openai | ollama
+provider = "anthropic"
 model = "claude-sonnet-4-5"
 max_tokens = 1024
-# ANTHROPIC_API_KEY 環境変数から自動取得
-
-[llm.ollama]
-base_url = "http://localhost:11434"
-model = "llama3"
 ```
 
 ---
@@ -796,24 +751,24 @@ model = "llama3"
 
 | カテゴリ | クレート | バージョン | 用途 |
 |----------|----------|-----------|------|
-| HTTP | `reqwest` | 0.12 | HTTP/2クライアント（rustls feature） |
-| TLS | `rustls` | 0.23 | TLS 1.3（reqwest経由） |
+| HTTP | `reqwest` | 0.12 | HTTPクライアント（rustls-tls, cookies, json features） |
+| TLS | `rustls` | — | reqwest 経由で使用 |
 | HTMLパース | `html5ever` | 0.27 | HTML5準拠パーサ |
 | DOM操作 | `markup5ever_rcdom` | 0.3 | DOMツリー操作 |
-| URL | `url` | 2.5 | URL型・バリデーション |
+| XMLパース | `roxmltree` | 0.20 | RSS/Atom/RDF フィードパース |
+| Markdownパース | `pulldown-cmark` | 0.12 | Markdown入力のパース |
+| 文字コード | `encoding_rs` | 0.8 | HTML文書の文字コード変換 |
+| WebSocket | `tokio-tungstenite` | 0.26 | CDP接続（`cdp` feature 有効時のみ） |
+| URL | `url` | 2 | URL型・バリデーション |
 | 非同期 | `tokio` | 1 | async runtime（full features） |
 | CLI | `clap` | 4 | 引数解析（derive feature） |
 | TUI | `ratatui` | 0.28 | ターミナルUI |
 | ターミナル | `crossterm` | 0.28 | クロスプラットフォームターミナル制御 |
-| 設定 | `config` | 0.14 | TOML設定ファイル |
 | シリアライズ | `serde` + `serde_json` | 1 | JSON / 構造体変換 |
 | エラー | `thiserror` | 2 | エラー型定義 |
 | エラー伝播 | `anyhow` | 1 | アプリケーション層エラー |
 | ログ | `tracing` + `tracing-subscriber` | 0.1 | 構造化ログ |
 | 日時 | `chrono` | 0.4 | DateTime型 |
-| 非同期trait | `async-trait` | 0.1 | async fn in trait |
-| CDP | `chromiumoxide` または `ferrum` | latest | CDP接続（SPA委譲） |
-| テスト | `tokio::test` + `mockito` | — | 非同期テスト・HTTPモック |
 
 ---
 
@@ -823,137 +778,93 @@ model = "llama3"
 stillo/
 ├── Cargo.toml
 ├── Cargo.lock
-├── CLAUDE.md                           # AI協働ガイド・lessons
+├── CLAUDE.md
 ├── README.md
+├── stillo-spec.md
 ├── config/
 │   └── default.toml
-├── crates/
-│   ├── cli/
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── main.rs
-│   │       └── args.rs
-│   ├── core/
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── document.rs
-│   │       ├── extractor.rs
-│   │       ├── extractor/
-│   │       │   ├── readability.rs
-│   │       │   └── spa_detection.rs
-│   │       └── markdown.rs
-│   ├── fetcher/
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── http.rs
-│   │       └── spa/
-│   │           ├── mod.rs
-│   │           ├── cdp.rs
-│   │           ├── playwright.rs
-│   │           ├── jina.rs
-│   │           └── firecrawl.rs
-│   ├── renderer/
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── tui.rs
-│   │       └── widgets/
-│   │           ├── content_view.rs
-│   │           ├── link_bar.rs
-│   │           └── status_bar.rs
-│   ├── llm/
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── client.rs
-│   │       ├── providers/
-│   │       │   ├── anthropic.rs
-│   │       │   ├── openai_compat.rs
-│   │       │   └── ollama.rs
-│   │       └── prompts.rs
-│   └── mcp/
-│       ├── Cargo.toml
-│       └── src/
-│           ├── lib.rs
-│           ├── server.rs
-│           └── tools/
-│               ├── fetch_url.rs
-│               ├── read_links.rs
-│               └── extract_structured.rs
-└── tests/
-    ├── integration/
-    │   ├── fetch_static.rs
-    │   ├── fetch_spa.rs
-    │   └── mcp_server.rs
-    └── fixtures/
-        ├── static_page.html
-        └── spa_page.html
+└── crates/
+    ├── cli/
+    │   ├── Cargo.toml
+    │   └── src/
+    │       ├── main.rs
+    │       └── args.rs
+    ├── core/
+    │   ├── Cargo.toml
+    │   └── src/
+    │       ├── lib.rs
+    │       ├── ast.rs
+    │       ├── document.rs
+    │       ├── extractor.rs
+    │       ├── extractor/
+    │       │   ├── readability.rs
+    │       │   └── spa_detection.rs
+    │       ├── html_to_ast.rs
+    │       ├── rss_to_ast.rs
+    │       ├── markdown_to_ast.rs
+    │       └── markdown.rs
+    ├── fetcher/
+    │   ├── Cargo.toml
+    │   └── src/
+    │       ├── lib.rs
+    │       ├── http.rs
+    │       └── spa/
+    │           ├── mod.rs
+    │           ├── cdp.rs
+    │           ├── playwright.rs
+    │           ├── jina.rs
+    │           └── firecrawl.rs
+    ├── renderer/
+    │   ├── Cargo.toml
+    │   └── src/
+    │       ├── lib.rs
+    │       ├── tui.rs
+    │       └── widgets/
+    │           ├── content_view.rs
+    │           ├── link_bar.rs
+    │           └── status_bar.rs
+    ├── llm/
+    │   ├── Cargo.toml
+    │   └── src/
+    │       ├── lib.rs
+    │       ├── client.rs
+    │       └── prompts.rs
+    └── mcp/
+        ├── Cargo.toml
+        └── src/
+            ├── lib.rs
+            ├── server.rs
+            └── tools/
+                ├── mod.rs
+                ├── fetch_url.rs
+                ├── read_links.rs
+                └── extract_structured.rs
 ```
 
 ---
 
 ## 14. 実装フェーズ
 
-### Phase 1: コアパイプライン（MVP）
+### Phase 1: コアパイプライン（完了）
 - `core`: ドメイン型・抽出エンジン・Markdownシリアライザ
 - `fetcher`: HTTP取得（静的HTMLのみ）
-- `cli`: `dump` サブコマンドのみ
-- 目標: `stillo dump https://example.com` が動作すること
+- `cli`: `dump` サブコマンド
 
-### Phase 2: SPA委譲
-- `fetcher/spa`: CDPおよびJina Reader実装
+### Phase 2: SPA委譲（完了）
+- `fetcher/spa`: CDP / Playwright / Jina Reader / Firecrawl 実装
 - SPA検出ロジック
-- 目標: React/Next.jsサイトでもコンテンツ抽出できること
+- frameset ページ対応（コンテンツ量が最多のフレームを選択）
 
-### Phase 3: TUIビューア
+### Phase 3: TUIビューア（完了）
 - `renderer`: ratatuiベースのTUI
-- キーバインド・リンクナビゲーション
-- 目標: `stillo https://example.com` でターミナルブラウジングできること
+- キーバインド・リンクナビゲーション・検索・URL入力
 
-### Phase 4: LLMブリッジ
-- `llm`: Anthropic / OpenAI / Ollama クライアント
+### Phase 4: LLMブリッジ（完了）
+- `llm`: Anthropic / OpenAI互換 / llama.cpp / Ollama クライアント
 - `cli`: `qa` / `summarize` / `extract` サブコマンド
-- 目標: `stillo qa "著者は？" https://example.com` が動作すること
+- RSS/Atom/RDF フィード対応
+- Markdown入力対応
 
-### Phase 5: MCPサーバー
-- `mcp`: stdio transport実装
-- Claude Code設定ドキュメント
-- 目標: Claude CodeからMCPツールとして呼び出せること
-
----
-
-## 15. CLAUDE.md（AI協働ガイド）
-
-```markdown
-# stillo CLAUDE.md
-
-## プロジェクト概要
-AIネイティブなターミナルブラウザ。Rust実装。
-
-## クレート責務
-- `core`: 純粋関数のみ。副作用禁止
-- `fetcher`: HTTP・SPA委譲のI/O
-- `renderer`: TUI描画
-- `llm`: LLM API呼び出し
-- `mcp`: MCPサーバー
-- `cli`: コマンドライン引数解析・全体オーケストレーション
-
-## 非同期
-async/awaitを使用。.then()チェーン禁止。
-
-## エラー処理
-- ライブラリクレート: `thiserror` で型付きエラー
-- アプリケーション層（cli）: `anyhow` で伝播
-
-## 命名規則
-- SPA関連型: `Spa` プレフィックス（例: `SpaDetection`, `SpaDelegationChain`）
-- 取得結果: `FetchResult` enum（直和型）
-- 変換関数: `extract_*`, `serialize_*`, `detect_*`
-
-## lessons
-- RawHtmlはバイト列で保持し、文字コード変換は抽出レイヤーで行う
-- SPAかどうかを判定してから委譲先を選ぶ（委譲先の選択をフェッチ前に決めない）
-- MCPのstdout書き込みはバッファリングして都度flushすること
-```
+### Phase 5: MCPサーバー（完了）
+- `mcp`: stdio transport（JSON-RPC 2.0）
+- ツール: `fetch_url` / `read_links` / `extract_structured`
