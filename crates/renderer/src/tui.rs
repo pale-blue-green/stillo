@@ -52,10 +52,19 @@ impl TuiBrowser {
         }
     }
 
-    /// CLIが履歴エントリを積む（戻る操作のため）
-    pub fn push_history(&mut self, page: BrowsePage) {
+    /// 現在ページを履歴に積んで新ページへ遷移する。CLIのナビゲーションループから呼ぶ。
+    pub fn load_page(&mut self, page: BrowsePage) {
         let offset = self.view.scroll_offset;
-        self.history.push((page, offset));
+        let old_page = std::mem::replace(&mut self.page, page);
+        self.history.push((old_page, offset));
+        self.view = ContentView::from_document(&self.page.doc, &self.page.links);
+        self.mode = BrowserMode::Normal;
+        self.search_matches.clear();
+        self.search_cursor = 0;
+    }
+
+    pub fn markdown(&self) -> &str {
+        &self.page.markdown
     }
 
     pub fn run(&mut self) -> Result<TuiResult> {

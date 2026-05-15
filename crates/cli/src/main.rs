@@ -76,20 +76,19 @@ async fn browse(
     delegate: Option<&DelegateTarget>,
     no_delegate: bool,
 ) -> Result<()> {
-    let mut current_url = start_url.clone();
+    let raw = fetch_raw(start_url, timeout, delegate, no_delegate).await?;
+    let page = raw_to_browse_page(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut browser = TuiBrowser::new(page);
 
     loop {
-        let raw = fetch_raw(&current_url, timeout, delegate, no_delegate).await?;
-        let page = raw_to_browse_page(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
-        let markdown = page.markdown.clone();
-        let mut browser = TuiBrowser::new(page);
-
         match browser.run()? {
             TuiResult::Navigate(next_url) => {
-                current_url = next_url;
+                let raw = fetch_raw(&next_url, timeout, delegate, no_delegate).await?;
+                let page = raw_to_browse_page(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
+                browser.load_page(page);
             }
             TuiResult::Dump => {
-                print!("{}", markdown);
+                print!("{}", browser.markdown());
                 break;
             }
             TuiResult::Quit => break,
