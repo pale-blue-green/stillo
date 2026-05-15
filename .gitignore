@@ -1,3 +1,5 @@
 /.direnv
 /.serena
 /target
+/.mcp.json
+/.claude
