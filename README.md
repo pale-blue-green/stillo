@@ -177,3 +177,30 @@ cargo build --features stillo-fetcher/cdp
 ```bash
 RUST_LOG=debug stillo dump https://example.com
 ```
+
+## リリース手順
+
+バージョン番号を上げて crates.io へ publish するには `bump-version.sh` を使います。
+
+```bash
+./scripts/bump-version.sh 0.2.0
+```
+
+このスクリプトは以下を一括実行します。
+
+1. `Cargo.toml` のバージョンを書き換え
+2. `cargo build` でビルド確認（`Cargo.lock` も更新）
+3. `git commit`（`chore: bump version to X.Y.Z`）
+4. `git tag vX.Y.Z` を作成
+5. `git push origin main vX.Y.Z`
+
+タグ push をトリガーに GitHub Actions（`.github/workflows/publish.yml`）が自動で起動し、以下を行います。
+
+- `cargo test --workspace` でテスト
+- 6クレートを依存順に crates.io へ publish
+- GitHub Release を自動作成
+
+### 事前準備
+
+- リポジトリの Settings → Secrets → `CARGO_REGISTRY_TOKEN` に crates.io の API トークンを登録しておくこと
+- 全クレートのオーナーに登録済みのアカウントのトークンを使用すること（`cargo owner --add <user> <crate>` で追加）
