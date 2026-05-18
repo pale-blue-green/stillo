@@ -1,0 +1,13 @@
+{
+  "name": "stillo-playwright-daemon",
+  "version": "0.1.0",
+  "description": "Playwright daemon for stillo SPA fetching — communicates via Unix socket",
+  "main": "daemon.js",
+  "scripts": {
+    "start": "node daemon.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}

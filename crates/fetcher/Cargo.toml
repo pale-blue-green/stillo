@@ -12,6 +12,9 @@ description = "HTTP client and SPA delegation chain for stillo terminal browser"
 cdp = ["dep:tokio-tungstenite"]
 default = []
 
+[dev-dependencies]
+tokio = { workspace = true }
+
 [dependencies]
 stillo-core = { path = "../core", version = "0.1" }
 url = { workspace = true }
