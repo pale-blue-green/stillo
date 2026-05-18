@@ -1,0 +1,94 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  publish:
+    name: Publish crates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # GitHub Release 作成に必要
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # タグ v0.1.11 からバージョン 0.1.11 を取り出す
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Cargo.toml のバージョンとタグが一致しているか確認
+      - name: Verify version matches Cargo.toml
+        run: |
+          cargo_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          tag_version="${{ steps.version.outputs.version }}"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "ERROR: Cargo.toml version ($cargo_version) does not match tag ($tag_version)"
+            exit 1
+          fi
+          echo "Version verified: $cargo_version"
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      # crates.io のインデックス反映を待ちながら依存順に publish する。
+      # 各クレートが登録されるまで最大 60 秒ポーリングする。
+      - name: Publish crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          publish_with_retry() {
+            local manifest="$1"
+            local name="$2"
+            echo "::group::Publishing $name"
+            cargo publish --manifest-path "$manifest"
+            echo "::endgroup::"
+
+            # 次のクレートが依存を解決できるようインデックス反映を待つ
+            echo "Waiting for $name to appear in crates.io index..."
+            for i in $(seq 1 12); do
+              sleep 5
+              if cargo search "$name" --limit 1 2>/dev/null | grep -q "^$name "; then
+                echo "$name is available (after ${i}x5s)"
+                return 0
+              fi
+            done
+            echo "Warning: $name not confirmed in index after 60s, proceeding anyway"
+          }
+
+          publish_with_retry crates/core/Cargo.toml     stillo-core
+          publish_with_retry crates/fetcher/Cargo.toml  stillo-fetcher
+          publish_with_retry crates/renderer/Cargo.toml stillo-renderer
+          publish_with_retry crates/llm/Cargo.toml      stillo-llm
+          publish_with_retry crates/mcp/Cargo.toml      stillo-mcp
+          publish_with_retry crates/cli/Cargo.toml      stillo
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
