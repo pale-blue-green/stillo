@@ -51,14 +51,20 @@ pub enum LlmProvider {
 impl LlmProvider {
     /// 環境変数から自動的にプロバイダーを選択する。
     /// ANTHROPIC_API_KEY → Anthropic
+    /// ANTHROPIC_BASE_URL → Anthropic（カスタムエンドポイント、プロキシ経由の場合はキー不要）
     /// OPENAI_API_KEY    → OpenAI 互換
     /// LLAMA_CPP_BASE_URL → llama.cpp サーバー（OpenAI 互換、API キー不要）
     /// 未設定             → Ollama (localhost:11434)
     pub fn from_env() -> Result<Self, LlmError> {
-        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+        let base_url = std::env::var("ANTHROPIC_BASE_URL").ok();
+        let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+
+        if api_key.is_some() || base_url.is_some() {
+            let key = api_key.unwrap_or_else(|| "proxy-managed".to_owned());
             let model = std::env::var("ANTHROPIC_MODEL")
                 .unwrap_or_else(|_| "claude-sonnet-4-5".to_owned());
-            return Ok(Self::Anthropic(AnthropicClient::new(api_key, model)));
+            let url = base_url.unwrap_or_else(|| "https://api.anthropic.com".to_owned());
+            return Ok(Self::Anthropic(AnthropicClient::new(key, model, url)));
         }
 
         if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
@@ -111,16 +117,17 @@ impl LlmProvider {
 pub struct AnthropicClient {
     api_key: String,
     model: String,
+    base_url: String,
     http: Client,
 }
 
 impl AnthropicClient {
-    pub fn new(api_key: String, model: String) -> Self {
+    pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
             api_key,
             model,
+            base_url,
             http: Client::builder()
-                .use_rustls_tls()
                 .build()
                 .expect("failed to build HTTP client"),
         }
@@ -150,8 +157,9 @@ impl AnthropicClient {
             "messages": user_messages,
         });
 
+        let endpoint = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let resp = self.http
-            .post("https://api.anthropic.com/v1/messages")
+            .post(&endpoint)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .json(&body)

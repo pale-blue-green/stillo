@@ -17,6 +17,19 @@
   - File: `crates/core/src/rss_to_ast.rs`
 
 - [ ] [IMPROVE] ソーシャル共有ウィジェットの除外（低優先度） <!-- 2026-05-15 -->
+
+- [ ] [IMPROVE] 大型ニュースサイトの出力サイズ制限 <!-- 2026-05-16 -->
+  - `https://www.npr.org/sections/news/` で 60KB の出力が返った（通常の 3〜5 倍）
+  - ニュース系インデックスページでは記事リストが大量に展開されるため
+  - 対策案: (A) 出力上限 (max_chars) パラメータを MCP ツールに追加 / (B) `read_links` で見出し+URLのみ先に取得してから個別記事を fetch する推奨フローをドキュメント化
+  - File: `crates/stillo-mcp/src/tools.rs` または `crates/core/src/markdown.rs`
+
+- [ ] [BUG] Al Jazeera `/tag/` URL → 404 <!-- 2026-05-16 -->
+  - `https://www.aljazeera.com/tag/iran/` が 404 で返る
+  - `/news/` (`https://www.aljazeera.com/news/`) は正常に取得可能
+  - タグページは SPA 完全レンダリングが必要な可能性。または URL 構造が変わった
+  - 回避策: `/news/` ページを fetch して iran 関連記事を手動フィルタ
+  - File: `crates/stillo-fetcher/src/lib.rs`（SPA判定ロジック）
   - 日経新聞など CSS Modules 実装サイトで「記事を印刷する」「X（旧Twitter）」等の共有ボタンテキストが本文に混入する
   - 誤検出リスクを考慮して対応見送り。方針は2択: (A) NOISE_CLASS_PATTERNS に "share"/"sns" 追加（30分、CSS Modules には効かない）/ (B) `<li>` テキストが SNS 名と完全一致ならスキップ（2〜3時間、CSS Modules も対応可だが本文 SNS 言及を誤除外するリスクあり）
   - File: `crates/core/src/extractor/readability.rs`
