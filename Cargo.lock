@@ -1628,7 +1628,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stillo"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -1646,7 +1646,7 @@ dependencies = [
 
 [[package]]
 name = "stillo-core"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -1662,7 +1662,7 @@ dependencies = [
 
 [[package]]
 name = "stillo-fetcher"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "reqwest",
  "serde",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "stillo-llm"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -1692,9 +1692,11 @@ dependencies = [
 
 [[package]]
 name = "stillo-mcp"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
+ "html5ever",
+ "markup5ever_rcdom",
  "serde",
  "serde_json",
  "stillo-core",
@@ -1708,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "stillo-renderer"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "crossterm",
