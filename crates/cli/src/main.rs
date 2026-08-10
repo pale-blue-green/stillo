@@ -87,6 +87,12 @@ async fn browse(
                 let page = raw_to_browse_page(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
                 browser.load_page(page);
             }
+            TuiResult::Reload => {
+                let reload_url = browser.current_url().clone();
+                let raw = fetch_raw(&reload_url, timeout, delegate, no_delegate).await?;
+                let page = raw_to_browse_page(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
+                browser.reload_page(page);
+            }
             TuiResult::Dump => {
                 print!("{}", browser.markdown());
                 break;
