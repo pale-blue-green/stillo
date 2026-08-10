@@ -54,6 +54,12 @@ async fn main() -> Result<()> {
             let no_del = cli.no_delegate;
             extract_fields(&fields, &url, &fmt, cli.timeout, del.as_ref(), no_del).await?;
         }
+        Some(Command::Search { query }) => {
+            let q = query.join(" ");
+            let mut url = Url::parse("https://html.duckduckgo.com/html/").unwrap();
+            url.query_pairs_mut().append_pair("q", q.trim());
+            browse(&url, cli.timeout, cli.delegate.as_ref(), cli.no_delegate).await?;
+        }
         Some(Command::Mcp) => {
             McpServer::new().run_stdio().await?;
         }
