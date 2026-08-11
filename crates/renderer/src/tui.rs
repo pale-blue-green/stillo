@@ -27,6 +27,8 @@ use crate::widgets::{
 pub enum TuiResult {
     Navigate(Url),
     Reload,
+    /// Web検索クエリ（検索チェーンは呼び出し側が実行する）
+    WebSearch(String),
     Dump,
     Quit,
 }
@@ -310,9 +312,8 @@ impl TuiBrowser {
                 };
                 self.mode = BrowserMode::Normal;
                 if !query.trim().is_empty() {
-                    let mut url = Url::parse("https://html.duckduckgo.com/html/").unwrap();
-                    url.query_pairs_mut().append_pair("q", query.trim());
-                    return Some(TuiResult::Navigate(url));
+                    // 検索HTTPは呼び出し側（cli）で実行し、結果ページを load_page してもらう
+                    return Some(TuiResult::WebSearch(query.trim().to_owned()));
                 }
             }
             KeyCode::Backspace => {

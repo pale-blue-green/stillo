@@ -56,9 +56,8 @@ async fn main() -> Result<()> {
         }
         Some(Command::Search { query }) => {
             let q = query.join(" ");
-            let mut url = Url::parse("https://html.duckduckgo.com/html/").unwrap();
-            url.query_pairs_mut().append_pair("q", q.trim());
-            browse(&url, cli.timeout, cli.delegate.as_ref(), cli.no_delegate).await?;
+            let page = run_web_search(&q).await?;
+            browse_page(page, cli.timeout, cli.delegate.as_ref(), cli.no_delegate).await?;
         }
         Some(Command::Mcp) => {
             McpServer::new().run_stdio().await?;
@@ -84,6 +83,17 @@ async fn browse(
 ) -> Result<()> {
     let raw = fetch_raw(start_url, timeout, delegate, no_delegate).await?;
     let page = raw_to_browse_page(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
+    browse_page(page, timeout, delegate, no_delegate).await
+}
+
+/// 取得済みの BrowsePage からTUIループを開始する。
+/// Web検索結果など「URLフェッチ以外から得たページ」を扱うための入口。
+async fn browse_page(
+    page: stillo_core::BrowsePage,
+    timeout: u64,
+    delegate: Option<&DelegateTarget>,
+    no_delegate: bool,
+) -> Result<()> {
     let mut browser = TuiBrowser::new(page);
 
     loop {
@@ -99,6 +109,13 @@ async fn browse(
                 let page = raw_to_browse_page(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
                 browser.reload_page(page);
             }
+            TuiResult::WebSearch(query) => {
+                // 検索バックエンドの全滅は TUI を殺さずに報知して続行する
+                match run_web_search(&query).await {
+                    Ok(page) => browser.load_page(page),
+                    Err(e) => eprintln!("search failed: {}", e),
+                }
+            }
             TuiResult::Dump => {
                 print!("{}", browser.markdown());
                 break;
@@ -107,6 +124,17 @@ async fn browse(
         }
     }
     Ok(())
+}
+
+/// Web検索を実行し、結果を BrowsePage に変換する。
+/// バックエンドチェーン・ブロック検出は stillo-fetcher::search が担う。
+async fn run_web_search(query: &str) -> Result<stillo_core::BrowsePage> {
+    let results = stillo_fetcher::web_search(query)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let md = stillo_fetcher::results_to_markdown(query, &results);
+    let url = Url::parse(&format!("stillo://search?q={}", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()))?;
+    Ok(stillo_core::parse_markdown_to_ast(&md, &url))
 }
 
 /// RawHtml を Content-Type とボディの内容に応じてフォーマット判定し BrowsePage に変換する。
