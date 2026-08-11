@@ -753,4 +753,101 @@ mod tests {
 
         assert_eq!(content.metadata.description.as_deref(), Some("OGPの説明"));
     }
+
+    // -----------------------------------------------------------------------
+    // is_noise / class_contains_pattern 回帰テスト
+    // -----------------------------------------------------------------------
+
+    /// class_contains_pattern の直接テスト。
+    /// コンポーネント単位の完全一致で、部分文字列一致しないことを確認する。
+    #[test]
+    fn test_class_contains_pattern_component_matching() {
+        // 回帰: Tailwind "shadow-2xs" が "ad" にヒットしてはならない（dev.classmethod.jp 障害）
+        assert!(!class_contains_pattern("shadow-2xs", "ad"));
+        assert!(!class_contains_pattern("header-image-container", "ad"));
+
+        // コンポーネント完全一致はヒットする
+        assert!(class_contains_pattern("ad", "ad"));
+        assert!(class_contains_pattern("ad-banner sidebar", "ad"));
+        assert!(class_contains_pattern("p-sidebar-nav", "nav"));
+
+        // Tailwind レスポンシブプレフィックスは除去して判定
+        assert!(class_contains_pattern("md:ad-banner", "ad"));
+        assert!(!class_contains_pattern("md:shadow-2xs", "ad"));
+
+        // 空文字列・無関係トークン
+        assert!(!class_contains_pattern("", "ad"));
+        assert!(!class_contains_pattern("card badge loading", "ad"));
+    }
+
+    /// is_noise のタグ/クラス判定。shadow-2xs クラスのdivがノイズ扱いされないこと。
+    #[test]
+    fn test_is_noise_regression_shadow_2xs() {
+        // 回帰: shadow-2xs が "ad" に誤ヒットして記事ラッパー全体が
+        // スキップされ、本文が13行しか取れなかった障害の再現防止
+        let html = r#"<html><body><div class="shadow-2xs bg-white rounded"><p>本文テキスト</p></div></body></html>"#;
+        let dom = parse_html(html);
+        let div = find_tag(&dom.document, "div").expect("div exists");
+        assert!(!is_noise(&div), "shadow-2xs はノイズではない");
+    }
+
+    /// ノイズタグ（nav/aside等）とノイスクラスの検出を確認する。
+    #[test]
+    fn test_is_noise_tags_and_classes() {
+        let html = r#"<html><body>
+<nav>メニュー</nav>
+<aside class="sidebar">関連</aside>
+<div id="ad-container">広告</div>
+<main><p>本文</p></main>
+</body></html>"#;
+        let dom = parse_html(html);
+
+        let nav = find_tag(&dom.document, "nav").unwrap();
+        assert!(is_noise(&nav), "nav タグはノイズ");
+
+        let aside = find_tag(&dom.document, "aside").unwrap();
+        assert!(is_noise(&aside), "sidebar クラスはノイズ");
+
+        let ad_div = find_tag(&dom.document, "div").unwrap();
+        assert!(is_noise(&ad_div), "id=ad-container はノイズ（ad コンポーネント一致）");
+
+        let main = find_tag(&dom.document, "main").unwrap();
+        assert!(!is_noise(&main), "main はノイズではない");
+    }
+
+    /// id="advertisement" は "ad" にヒットしない（コンポーネント完全一致の設計意図）。
+    /// 部分文字列一致に戻すと shadow-2xs→ad のような誤検出が再発するため、
+    /// この挙動を回帰テストとして固定する。
+    #[test]
+    fn test_advertisement_id_is_not_noise_by_design() {
+        let html = r#"<html><body><div id="advertisement"><p>本文テキスト</p></div></body></html>"#;
+        let dom = parse_html(html);
+        let div = find_tag(&dom.document, "div").unwrap();
+        assert!(
+            !is_noise(&div),
+            "advertisement は ad コンポーネントに完全一致しないためノイズ扱いしない"
+        );
+    }
+
+    /// shadow-2xs ラッパー内の本文が抽出されること（エンドツーエンド回帰）。
+    #[test]
+    fn test_extract_content_inside_shadow_wrapper() {
+        let article = "これは記事の本文です。十分な長さを持たせて抽出対象になるようにしています。".repeat(3);
+        let html = format!(
+            r#"<!DOCTYPE html><html><head><title>テスト記事</title></head><body>
+<div class="shadow-2xs"><article><h1>記事タイトル</h1><p>{}</p></article></div>
+</body></html>"#,
+            article
+        );
+        let dom = parse_html(&html);
+        let base_url = Url::parse("https://dev.example.jp/articles/1").unwrap();
+        let extractor = ReadabilityExtractor { preserve_links: true };
+        let content = extractor.extract(&dom.document, &base_url);
+
+        assert!(
+            content.body_text.contains("これは記事の本文です"),
+            "shadow-2xs ラッパー内の本文が抽出されるべき: got {:?}",
+            &content.body_text[..content.body_text.len().min(100)]
+        );
+    }
 }
