@@ -20,7 +20,7 @@ impl ReadabilityExtractor {
         let body = find_body(root);
 
         let main_node = body.as_ref()
-            .and_then(|b| find_main_content(b))
+            .and_then(find_main_content)
             .or(body.clone());
 
         let (mh, mt, ml) = main_node
@@ -276,7 +276,7 @@ fn is_noise(handle: &Handle) -> bool {
 fn class_contains_pattern(class_val: &str, pattern: &str) -> bool {
     class_val.split_whitespace().any(|token| {
         // Tailwind のレスポンシブプレフィックス (sm:, md:, lg: など) を除去
-        let bare = token.split(':').last().unwrap_or(token);
+        let bare = token.split(':').next_back().unwrap_or(token);
         // ハイフン区切りのコンポーネントが完全一致するか確認
         bare.split('-').any(|part| part == pattern)
     })
@@ -358,7 +358,7 @@ fn serialize_node(
             let attrs_ref = attrs.borrow();
 
             match tag {
-                "script" | "style" | "noscript" | "iframe" => return,
+                "script" | "style" | "noscript" | "iframe" => (),
                 "a" if preserve_links => {
                     let href = attrs_ref.iter()
                         .find(|a| a.name.local.as_ref() == "href")
@@ -396,7 +396,6 @@ fn serialize_node(
                             });
                         }
                     }
-                    return;
                 }
                 _ => {
                     // ブロック要素
@@ -425,7 +424,6 @@ fn serialize_node(
                             serialize_node(child, html, text, links, base_url, preserve_links);
                         }
                     }
-                    return;
                 }
             }
         }

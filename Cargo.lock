@@ -1696,8 +1696,6 @@ name = "stillo-mcp"
 version = "0.1.15"
 dependencies = [
  "anyhow",
- "html5ever",
- "markup5ever_rcdom",
  "serde",
  "serde_json",
  "stillo-core",

@@ -256,7 +256,7 @@ async fn fetch_richest_frame(
             0
         };
         let score = raw.bytes.len() as i64 + nav_penalty;
-        if best.as_ref().map_or(true, |(_, s)| score > *s) {
+        if best.as_ref().is_none_or(|(_, s)| score > *s) {
             best = Some((raw, score));
         }
     }
